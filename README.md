@@ -1,20 +1,44 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# PixelPerfect Image Converter & Explorer
 
-# Run and deploy your AI Studio app
+PixelPerfect is a professional-grade desktop application designed for high-precision image conversion, resizing, and compression. Built with a focus on speed and quality, it provides a seamless workflow for both casual users and professionals.
 
-This contains everything you need to run your app locally.
+## 🚀 Key Features
 
-View your app in AI Studio: https://ai.studio/apps/5a51abdc-9f6d-464f-bc7e-0c8ab4c7e001
+- **Universal Conversion**: Support for all major formats including JPEG, PNG, WebP, BMP, TIFF, and GIF.
+- **Automatic Format Detection**: Instantly identifies the format of uploaded images.
+- **Precision Compression**: Target specific file sizes (KB) or use optimization strength sliders to balance quality and size.
+- **Lossless Mode**: Maximize image quality for professional use cases.
+- **Format Explorer**: A built-in encyclopedia explaining the pros, cons, and best use cases for every image format.
+- **Dark Mode Support**: A sleek, eye-friendly interface that adapts to your preference.
+- **Batch Processing**: Convert multiple images simultaneously with a single click.
+- **Cross-Platform**: Available for Windows (Portable) and Linux (Debian/AppImage).
 
-## Run Locally
+## 🛠 Technical Functions
 
-**Prerequisites:**  Node.js
+- **Smart Resizing**: Maintains aspect ratio while optimizing for the web.
+- **Real-time Status**: Track the processing state of every file in your queue.
+- **Instant Preview**: Visual indicators for different file types (🎨 for PNG, 🖼 for WebP, 📷 for others).
+- **One-Click Export**: Download converted files individually or export the entire processed batch.
 
+## 💻 Installation
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### Windows
+1. Download the `PixelPerfect-Converter-Portable.exe` from the releases.
+2. Run the executable directly (no installation required).
+
+### Linux (Debian/Ubuntu)
+1. Download the `.deb` package.
+2. Install via terminal: `sudo dpkg -i pixelperfect-converter_1.0.0_amd64.deb`
+3. Or use the `.AppImage` for a portable experience.
+
+## 🛠 Development & Building
+
+If you wish to build the application from source:
+
+1. **Clone the repository**
+2. **Install dependencies**: `npm install`
+3. **Run in development mode**: `npm run electron:dev`
+4. **Build installers**: `npm run electron:build`
+
+---
+*Created with precision by the PixelPerfect Team.*

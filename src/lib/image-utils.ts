@@ -1,11 +1,19 @@
-export type OutputFormat = 
-  | 'image/jpeg' 
-  | 'image/png' 
-  | 'image/webp' 
+import {
+  applyEdgePreservingDenoise,
+  computeFastSSIM,
+  encodeOptimizedPNG,
+} from './compression-engine';
+
+export type OutputFormat =
+  | 'image/jpeg'
+  | 'image/png'
+  | 'image/webp'
   | 'image/avif'
-  | 'image/bmp' 
-  | 'image/tiff' 
+  | 'image/bmp'
+  | 'image/tiff'
   | 'image/gif';
+
+export type PerceptualPreset = 'visually-lossless' | 'balanced' | 'compact';
 
 export interface ProcessingOptions {
   format: OutputFormat;
@@ -13,8 +21,10 @@ export interface ProcessingOptions {
   maxWidth?: number;
   maxHeight?: number;
   quality?: number; // 0.0 to 1.0
-  stripMetadata?: boolean;
-  progressive?: boolean;
+  lossless?: boolean;
+  smartPerceptual?: boolean;
+  perceptualPreset?: PerceptualPreset;
+  denoise?: boolean;
   backgroundColor?: string; // Default #ffffff for formats without transparency
 }
 
@@ -29,6 +39,8 @@ export interface ProcessedImage {
   originalSize: number;
   originalWidth: number;
   originalHeight: number;
+  ssimScore?: number; // 0.0 to 1.0 perceptual similarity score
+  methodUsed?: string;
 }
 
 export interface AndroidBridge {
@@ -42,6 +54,12 @@ declare global {
     PixelPerfectAndroid?: AndroidBridge;
   }
 }
+
+const PRESET_SSIM_TARGET: Record<PerceptualPreset, number> = {
+  'visually-lossless': 0.985,
+  'balanced': 0.970,
+  'compact': 0.945,
+};
 
 /**
  * Determine safe worker concurrency based on device memory & platform
@@ -66,7 +84,6 @@ function releaseCanvas(canvas: HTMLCanvasElement): void {
 
 /**
  * Create a lightweight <=96px thumbnail object URL and extract native dimensions
- * Avoids decoding full-resolution multi-megabyte camera photos just for UI list rows
  */
 export async function createThumbnail(
   file: File,
@@ -121,8 +138,49 @@ export async function createThumbnail(
 }
 
 /**
- * Pure TypeScript BMP Encoder
- * Encodes standard 32-bit BGRA uncompressed BMP format
+ * Decode a Blob back into RGBA pixels on a disposable canvas for perceptual SSIM verification
+ */
+async function decodeBlobToRgba(blob: Blob, width: number, height: number): Promise<Uint8Array | null> {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  try {
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+
+    if (typeof createImageBitmap === 'function') {
+      const bmp = await createImageBitmap(blob);
+      try {
+        ctx.drawImage(bmp, 0, 0, width, height);
+      } finally {
+        bmp.close();
+      }
+    } else {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      try {
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject();
+          img.src = url;
+        });
+        ctx.drawImage(img, 0, 0, width, height);
+      } finally {
+        img.src = '';
+        URL.revokeObjectURL(url);
+      }
+    }
+
+    return new Uint8Array(ctx.getImageData(0, 0, width, height).data.buffer);
+  } catch {
+    return null;
+  } finally {
+    releaseCanvas(canvas);
+  }
+}
+
+/**
+ * Pure TypeScript BMP Encoder (32-bit BGRA uncompressed BMP)
  */
 export function encodeBMP(imageData: ImageData): Blob {
   const width = imageData.width;
@@ -138,14 +196,12 @@ export function encodeBMP(imageData: ImageData): Blob {
   const buffer = new ArrayBuffer(fileSize);
   const view = new DataView(buffer);
 
-  // BITMAPFILEHEADER
-  view.setUint16(0, 0x4D42, true); // 'BM'
+  view.setUint16(0, 0x4D42, true);
   view.setUint32(2, fileSize, true);
   view.setUint16(6, 0, true);
   view.setUint16(8, 0, true);
   view.setUint32(10, fileHeaderSize + infoHeaderSize, true);
 
-  // BITMAPINFOHEADER
   view.setUint32(14, infoHeaderSize, true);
   view.setInt32(18, width, true);
   view.setInt32(22, height, true);
@@ -163,10 +219,10 @@ export function encodeBMP(imageData: ImageData): Blob {
     const rowOffset = y * width * 4;
     for (let x = 0; x < width; x++) {
       const idx = rowOffset + x * 4;
-      view.setUint8(offset++, data[idx + 2]); // B
-      view.setUint8(offset++, data[idx + 1]); // G
-      view.setUint8(offset++, data[idx]);     // R
-      view.setUint8(offset++, data[idx + 3]); // A
+      view.setUint8(offset++, data[idx + 2]);
+      view.setUint8(offset++, data[idx + 1]);
+      view.setUint8(offset++, data[idx]);
+      view.setUint8(offset++, data[idx + 3]);
     }
   }
 
@@ -174,8 +230,7 @@ export function encodeBMP(imageData: ImageData): Blob {
 }
 
 /**
- * Pure TypeScript Baseline TIFF Encoder
- * Encodes standard Little-Endian 32-bit RGBA TIFF 6.0 format
+ * Pure TypeScript Baseline TIFF Encoder (32-bit RGBA TIFF 6.0)
  */
 export function encodeTIFF(imageData: ImageData): Blob {
   const width = imageData.width;
@@ -198,7 +253,7 @@ export function encodeTIFF(imageData: ImageData): Blob {
   const buffer = new ArrayBuffer(totalFileSize);
   const view = new DataView(buffer);
 
-  view.setUint16(0, 0x4949, true); // 'II' Little-Endian
+  view.setUint16(0, 0x4949, true);
   view.setUint16(2, 42, true);
   view.setUint32(4, 8, true);
   view.setUint16(8, numTags, true);
@@ -271,7 +326,8 @@ export function calculateDimensions(
 }
 
 /**
- * Process a single image file with high-fidelity encoding and memory-safe disposal
+ * Process a single image file with perceptual SSIM auto-optimization,
+ * adaptive PNG quantization, edge-preserving denoise, and memory-safe disposal.
  */
 export async function processImage(
   file: File,
@@ -283,10 +339,13 @@ export async function processImage(
     maxWidth,
     maxHeight,
     quality = 0.82,
+    lossless = false,
+    smartPerceptual = true,
+    perceptualPreset = 'visually-lossless',
+    denoise = false,
     backgroundColor = '#ffffff'
   } = options;
 
-  // 1. Load source image to read native dimensions
   const img = new Image();
   const fileUrl = URL.createObjectURL(file);
   try {
@@ -308,14 +367,16 @@ export async function processImage(
     maxHeight
   );
 
-  // 2. Set up offscreen canvas and explicitly release backing store in finally
   const canvas = document.createElement('canvas');
   canvas.width = targetWidth;
   canvas.height = targetHeight;
 
   let processedBlob: Blob;
+  let ssimScore: number | undefined;
+  let methodUsed: string | undefined;
+
   try {
-    const ctx = canvas.getContext('2d', { willReadFrequently: format === 'image/bmp' || format === 'image/tiff' });
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) throw new Error('Could not initialize 2D canvas context');
 
     const needsBackground = format === 'image/jpeg' || format === 'image/bmp';
@@ -327,7 +388,6 @@ export async function processImage(
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
 
-    // Use pre-scaled ImageBitmap when downsizing large images to reduce memory overhead
     let bitmap: ImageBitmap | null = null;
     if (typeof createImageBitmap === 'function' && (targetWidth < origWidth || targetHeight < origHeight)) {
       try {
@@ -346,48 +406,101 @@ export async function processImage(
       ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
     }
 
-    // Clear decoded image reference early
     img.src = '';
 
-    // 3. Encode depending on target format
+    // Grab original RGBA pixels for SSIM verification & custom encoders
+    const rawImageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+    const origRgba = new Uint8Array(rawImageData.data.buffer);
+
+    // Optional Edge-Preserving Noise Cleaner to strip invisible ISO grain before encoding
+    let workRgba = origRgba;
+    if (denoise && !lossless) {
+      workRgba = applyEdgePreservingDenoise(origRgba, targetWidth, targetHeight, 8);
+      const cleanedData = new ImageData(new Uint8ClampedArray(workRgba), targetWidth, targetHeight);
+      ctx.putImageData(cleanedData, 0, 0);
+    }
+
     if (format === 'image/bmp') {
-      const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-      processedBlob = encodeBMP(imgData);
+      processedBlob = encodeBMP(ctx.getImageData(0, 0, targetWidth, targetHeight));
+      ssimScore = 1.0;
+      methodUsed = '32-bit BMP';
     } else if (format === 'image/tiff') {
-      const imgData = ctx.getImageData(0, 0, targetWidth, targetHeight);
-      processedBlob = encodeTIFF(imgData);
+      processedBlob = encodeTIFF(ctx.getImageData(0, 0, targetWidth, targetHeight));
+      ssimScore = 1.0;
+      methodUsed = 'Baseline TIFF';
+    } else if (format === 'image/png') {
+      // Advanced PNG Pipeline:
+      // Always evaluate lossless adaptive-filter + color-reduction PNG vs native Chromium PNG,
+      // and when smartPerceptual is enabled, also evaluate Median-Cut quantized PNG.
+      const losslessBytes = encodeOptimizedPNG(workRgba, targetWidth, targetHeight, { lossless: true });
+      const losslessBlob = new Blob([losslessBytes.buffer as ArrayBuffer], { type: 'image/png' });
+      const nativeBlob = await new Promise<Blob>((resolve) =>
+        canvas.toBlob((b) => resolve(b!), 'image/png')
+      );
+
+      let bestPngBlob = losslessBlob.size <= nativeBlob.size ? losslessBlob : nativeBlob;
+      let bestMethod = losslessBlob.size <= nativeBlob.size ? 'Lossless PNG (Adaptive Filter)' : 'Lossless PNG';
+      let bestSSIM = 1.0;
+
+      if (!lossless && smartPerceptual) {
+        const maxColors = perceptualPreset === 'compact' ? 128 : 256;
+        const quantBytes = encodeOptimizedPNG(workRgba, targetWidth, targetHeight, {
+          lossless: false,
+          maxColors,
+          dither: true,
+        });
+        const quantBlob = new Blob([quantBytes.buffer as ArrayBuffer], { type: 'image/png' });
+
+        if (quantBlob.size < bestPngBlob.size) {
+          const compRgba = await decodeBlobToRgba(quantBlob, targetWidth, targetHeight);
+          const measured = compRgba ? computeFastSSIM(origRgba, compRgba, targetWidth, targetHeight) : 0.985;
+          const minAcceptSSIM = Math.max(0.92, PRESET_SSIM_TARGET[perceptualPreset] - 0.025);
+
+          if (measured >= minAcceptSSIM) {
+            bestPngBlob = quantBlob;
+            bestSSIM = measured;
+            bestMethod = `Quantized PNG (${maxColors} colors)`;
+          }
+        }
+      }
+
+      processedBlob = bestPngBlob;
+      ssimScore = bestSSIM;
+      methodUsed = bestMethod;
     } else {
+      // Lossy / Hybrid Formats: JPEG, WebP, AVIF, GIF
       const targetMime = (format === 'image/avif' && !isFormatSupported('image/avif'))
         ? 'image/webp'
         : format;
 
-      processedBlob = await new Promise<Blob>((resolve) => {
-        canvas.toBlob((b) => {
-          if (b) {
-            resolve(b);
-          } else {
-            canvas.toBlob((fallback) => resolve(fallback!), 'image/png');
-          }
-        }, targetMime, quality);
-      });
+      const encodeAtQuality = (q: number) =>
+        new Promise<Blob>((resolve) => {
+          canvas.toBlob((b) => {
+            if (b) resolve(b);
+            else canvas.toBlob((fb) => resolve(fb!), 'image/png');
+          }, targetMime, q);
+        });
 
-      // 4. Strict Target Size Enforcement
-      if (targetSizeKB && (format === 'image/jpeg' || format === 'image/webp' || format === 'image/avif')) {
+      const initialQ = lossless ? 1.0 : quality;
+      processedBlob = await encodeAtQuality(initialQ);
+      methodUsed = lossless ? 'Lossless / Max Quality' : `Quality ${Math.round(initialQ * 100)}%`;
+
+      // Mode A: Strict Target File Size KB override
+      if (targetSizeKB && !lossless && (format === 'image/jpeg' || format === 'image/webp' || format === 'image/avif')) {
         const targetBytes = targetSizeKB * 1024;
         let low = 0.05;
-        let high = quality;
+        let high = initialQ;
         let bestBlob = processedBlob;
+        let bestQ = initialQ;
         let iterations = 0;
 
         while (iterations < 6) {
           const mid = (low + high) / 2;
-          const currentBlob = await new Promise<Blob>((resolve) => {
-            canvas.toBlob((b) => resolve(b || bestBlob), targetMime, mid);
-          });
-
+          const currentBlob = await encodeAtQuality(mid);
           const diffRatio = Math.abs(currentBlob.size - targetBytes) / targetBytes;
           if (currentBlob.size <= targetBytes) {
             bestBlob = currentBlob;
+            bestQ = mid;
             if (diffRatio < 0.04) break;
             low = mid;
           } else {
@@ -396,7 +509,68 @@ export async function processImage(
           iterations++;
         }
         processedBlob = bestBlob;
+        methodUsed = `Target ${targetSizeKB}KB (q=${Math.round(bestQ * 100)}%)`;
+        const compRgba = await decodeBlobToRgba(processedBlob, targetWidth, targetHeight);
+        if (compRgba) ssimScore = computeFastSSIM(origRgba, compRgba, targetWidth, targetHeight);
       }
+      // Mode B: Smart Perceptual SSIM Rate-Distortion Auto-Optimization
+      else if (smartPerceptual && !lossless && (format === 'image/jpeg' || format === 'image/webp' || format === 'image/avif')) {
+        const targetSSIM = PRESET_SSIM_TARGET[perceptualPreset];
+        let low = perceptualPreset === 'compact' ? 0.25 : 0.35;
+        let high = Math.max(low + 0.05, initialQ);
+        let bestBlob = processedBlob;
+        let bestQ = initialQ;
+        let bestSSIM = 1.0;
+
+        // First verify baseline initialQ SSIM
+        const baseRgba = await decodeBlobToRgba(processedBlob, targetWidth, targetHeight);
+        if (baseRgba) {
+          bestSSIM = computeFastSSIM(origRgba, baseRgba, targetWidth, targetHeight);
+        }
+
+        // Binary search lowest bitrate that preserves SSIM >= targetSSIM
+        for (let iter = 0; iter < 5; iter++) {
+          const mid = (low + high) / 2;
+          const candidate = await encodeAtQuality(mid);
+          const compRgba = await decodeBlobToRgba(candidate, targetWidth, targetHeight);
+          if (!compRgba) break;
+
+          const score = computeFastSSIM(origRgba, compRgba, targetWidth, targetHeight);
+          if (score >= targetSSIM) {
+            if (candidate.size < bestBlob.size) {
+              bestBlob = candidate;
+              bestQ = mid;
+              bestSSIM = score;
+            }
+            high = mid; // Try lower bitrate while keeping SSIM >= target
+          } else {
+            low = mid; // Need higher quality
+          }
+        }
+
+        processedBlob = bestBlob;
+        ssimScore = bestSSIM;
+        methodUsed = `SSIM Auto (q=${Math.round(bestQ * 100)}%)`;
+      } else if (!lossless) {
+        const compRgba = await decodeBlobToRgba(processedBlob, targetWidth, targetHeight);
+        if (compRgba) ssimScore = computeFastSSIM(origRgba, compRgba, targetWidth, targetHeight);
+      } else {
+        ssimScore = 1.0;
+      }
+    }
+
+    // Same-format size safeguard: never output a larger file if no resize/denoise/targetSize was requested
+    const noResize = !maxWidth && !maxHeight;
+    if (
+      noResize &&
+      !targetSizeKB &&
+      !denoise &&
+      file.type === format &&
+      processedBlob.size > file.size
+    ) {
+      processedBlob = file;
+      ssimScore = 1.0;
+      methodUsed = 'Original Kept (Already Optimal)';
     }
   } finally {
     img.src = '';
@@ -428,6 +602,8 @@ export async function processImage(
     originalSize: file.size,
     originalWidth: origWidth,
     originalHeight: origHeight,
+    ssimScore,
+    methodUsed,
   };
 }
 

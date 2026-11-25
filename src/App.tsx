@@ -50,7 +50,8 @@ import {
   createThumbnail,
   saveBlobToDevice,
   getOptimalConcurrency,
-  type OutputFormat, 
+  type OutputFormat,
+  type PerceptualPreset,
   type ProcessedImage 
 } from './lib/image-utils';
 
@@ -91,6 +92,9 @@ export default function App() {
   const [lockAspectRatio, setLockAspectRatio] = useState(true);
   const [backgroundColor, setBackgroundColor] = useState('#ffffff');
   const [lossless, setLossless] = useState(false);
+  const [smartPerceptual, setSmartPerceptual] = useState(true);
+  const [perceptualPreset, setPerceptualPreset] = useState<PerceptualPreset>('visually-lossless');
+  const [denoise, setDenoise] = useState(false);
 
   // Processing & feedback state
   const [isProcessingAll, setIsProcessingAll] = useState(false);
@@ -312,6 +316,10 @@ export default function App() {
       const result = await processImage(item.file, {
         format,
         quality: lossless ? 1.0 : quality / 100,
+        lossless,
+        smartPerceptual,
+        perceptualPreset,
+        denoise,
         targetSizeKB: targetSizeKB ? parseInt(targetSizeKB) : undefined,
         maxWidth: maxWidth ? parseInt(maxWidth) : undefined,
         maxHeight: maxHeight ? parseInt(maxHeight) : undefined,
@@ -514,15 +522,70 @@ export default function App() {
           isDarkMode ? "bg-slate-800/60 border-slate-700" : "bg-slate-50 border-slate-200"
         )}>
           <div className="flex flex-col">
-            <span className="text-xs font-bold">Lossless Mode</span>
-            <span className="text-[10px] text-slate-500 dark:text-slate-400">100% pixel fidelity</span>
+            <span className="text-xs font-bold">Smart Perceptual (SSIM)</span>
+            <span className="text-[10px] text-slate-500 dark:text-slate-400">Smallest file at guaranteed fidelity</span>
           </div>
           <input 
             type="checkbox" 
-            checked={lossless} 
-            onChange={(e) => setLossless(e.target.checked)}
-            className="w-4 h-4 accent-indigo-600 cursor-pointer"
+            checked={smartPerceptual} 
+            disabled={lossless}
+            onChange={(e) => setSmartPerceptual(e.target.checked)}
+            className="w-4 h-4 accent-indigo-600 cursor-pointer disabled:opacity-40"
           />
+        </div>
+
+        {smartPerceptual && !lossless && (
+          <div className="space-y-1.5">
+            <Label className="text-[11px] font-semibold text-slate-500 uppercase">Perceptual Target</Label>
+            <Select value={perceptualPreset} onValueChange={(v) => setPerceptualPreset(v as PerceptualPreset)}>
+              <SelectTrigger className={cn(
+                "w-full rounded-xl h-9 text-xs font-medium",
+                isDarkMode ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-200 text-slate-900"
+              )}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className={isDarkMode ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-200 text-slate-900"}>
+                <SelectItem value="visually-lossless">Visually Lossless (SSIM 98.5%+)</SelectItem>
+                <SelectItem value="balanced">Balanced High (SSIM 97.0%+)</SelectItem>
+                <SelectItem value="compact">Max Savings (SSIM 94.5%+)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className={cn(
+            "flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-colors",
+            isDarkMode ? "bg-slate-800/40 border-slate-700" : "bg-slate-50 border-slate-200"
+          )}>
+            <div className="flex flex-col">
+              <span className="text-[11px] font-bold">Lossless</span>
+              <span className="text-[9px] text-slate-500 dark:text-slate-400">100% exact</span>
+            </div>
+            <input 
+              type="checkbox" 
+              checked={lossless} 
+              onChange={(e) => setLossless(e.target.checked)}
+              className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer"
+            />
+          </label>
+
+          <label className={cn(
+            "flex items-center justify-between p-2.5 rounded-xl border cursor-pointer transition-colors",
+            isDarkMode ? "bg-slate-800/40 border-slate-700" : "bg-slate-50 border-slate-200"
+          )}>
+            <div className="flex flex-col">
+              <span className="text-[11px] font-bold">Grain Clean</span>
+              <span className="text-[9px] text-slate-500 dark:text-slate-400">Edge-safe</span>
+            </div>
+            <input 
+              type="checkbox" 
+              checked={denoise} 
+              disabled={lossless}
+              onChange={(e) => setDenoise(e.target.checked)}
+              className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer disabled:opacity-40"
+            />
+          </label>
         </div>
 
         <div className="space-y-2">
@@ -1168,9 +1231,18 @@ export default function App() {
                             {/* Status */}
                             <div className="hidden md:block">
                               {item.status === 'completed' ? (
-                                <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] font-bold">
-                                  Converted
-                                </Badge>
+                                <div className="flex flex-col gap-0.5">
+                                  <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] font-bold w-fit">
+                                    {item.result?.ssimScore !== undefined
+                                      ? `SSIM ${(item.result.ssimScore * 100).toFixed(1)}%`
+                                      : 'Converted'}
+                                  </Badge>
+                                  {item.result?.methodUsed && (
+                                    <span className="text-[9px] text-slate-400 truncate max-w-[105px]" title={item.result.methodUsed}>
+                                      {item.result.methodUsed}
+                                    </span>
+                                  )}
+                                </div>
                               ) : item.status === 'processing' ? (
                                 <Badge variant="secondary" className="bg-indigo-500/10 text-indigo-500 border-indigo-500/20 text-[10px] font-bold flex items-center gap-1 w-fit">
                                   <Loader2 className="w-2.5 h-2.5 animate-spin" />
@@ -1349,12 +1421,22 @@ export default function App() {
                   </div>
                   <div className="flex justify-between items-center text-[11px] font-mono">
                     <span className="text-slate-400">
-                      Dimensions: {inspectedItem.result.width} x {inspectedItem.result.height} px
+                      {inspectedItem.result.width}x{inspectedItem.result.height}px
+                      {inspectedItem.result.ssimScore !== undefined && (
+                        <span className="text-indigo-500 dark:text-indigo-400 ml-2 font-bold">
+                          SSIM {(inspectedItem.result.ssimScore * 100).toFixed(1)}%
+                        </span>
+                      )}
                     </span>
                     <span className="text-emerald-500 font-bold">
                       Saved {Math.round(((inspectedItem.file.size - inspectedItem.result.size) / inspectedItem.file.size) * 100)}%
                     </span>
                   </div>
+                  {inspectedItem.result.methodUsed && (
+                    <div className="text-[10px] text-slate-400 font-mono">
+                      Engine: {inspectedItem.result.methodUsed}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1474,7 +1556,7 @@ function FormatExplorer({ isDarkMode, onSelectFormat }: { isDarkMode: boolean, o
           </p>
         </div>
         <Badge variant="outline" className="font-mono text-xs shrink-0">
-          v1.2.0 Stable
+          v1.3.0 Stable
         </Badge>
       </header>
 

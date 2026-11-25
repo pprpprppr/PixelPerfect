@@ -1,79 +1,77 @@
 # PixelPerfect Image Converter & Explorer
 
-[![Release](https://img.shields.io/badge/version-1.1.1-indigo.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
+[![Release](https://img.shields.io/badge/version-1.2.0-indigo.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Android-blue.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
-**PixelPerfect** is a high-performance desktop application designed for instant image conversion, intelligent resizing, and precision compression. Built with Electron, Vite, React, and TypeScript, it delivers native desktop speed and zero-latency offline workflows.
+**PixelPerfect** is a high-performance cross-platform application designed for instant image conversion, intelligent resizing, and precision compression. Built with React, TypeScript, Tailwind CSS, Electron (Desktop), and native Android WebView, it delivers fast offline workflows across Windows, Linux, and Android.
 
 ---
 
-## ⚡ What's New in v1.1.1
+## ⚡ What's New in v1.2.0
 
-- 💾 **Storage & Bundle Optimization**: Trimmed unused Electron locales (~45 MB), removed redundant bundled `node_modules` from `app.asar` (~1.7 MB), stripped unused 19 MB Chromium license dump and 26.5 MB WebGPU DXC compiler DLLs (Windows), cutting installed disk footprint by ~70–95 MB without sacrificing any features or startup speed.
+- 📱 **Android App Support (~240 KB APK)**: Ultra-lightweight native Android shell using the system WebView with zero bloated third-party SDKs, R8 minification, resource shrinking, native multi-image gallery picker, and direct `MediaStore` saving to `Downloads/PixelPerfect/`.
+- 🎨 **Explicit White & Dark Themes**: Crisp White and deep Dark themes with proper Tailwind v4 class-based theming, an explicit `White / Dark` switcher pill, persistent theme storage, and synchronized Android system status/navigation bars.
+- 🧠 **Memory Optimizations**:
+  - Generates lightweight `<=96px` thumbnail previews in the queue instead of keeping full multi-megabyte camera bitmaps decoded in DOM memory (>95% RAM reduction for large photo batches).
+  - Uses `createImageBitmap` pre-scaled decoding when resizing down and immediately releases canvas backing stores (`width = 0; height = 0`) after encoding.
+  - Adaptive worker concurrency (`2` workers on mobile/low-RAM devices, `4` on desktop) and automatic `onTrimMemory` cache cleanup on Android.
+- 📲 **Responsive Mobile & Desktop UI**: Seamless layout adapting between the 3-column desktop workspace and touch-friendly mobile tabs (`Queue`, `Settings`, `Formats`).
 
-## ⚡ What's New in v1.1.0
+## ⚡ Previous Releases
 
-- 🚀 **Zero Launch Delay & Fast Startup**: Optimized Electron lifecycle with `ready-to-show` rendering, pre-warmed GPU rasterization, single-instance lock, and removed blocking remote font calls for instantaneous startup.
-- 🖼 **Universal High-Fidelity Formats**:
-  - **AVIF**: Next-gen image format with up to 50% better compression than WebP.
-  - **True BMP & TIFF**: Pure client-side binary encoders producing valid 32-bit BMP and TIFF 6.0 files.
-  - **WebP, JPEG, PNG, GIF**: Full lossy and lossless support.
-- ⚡ **High-Speed Parallel Processing**: Batch conversion running across 4 concurrent worker threads with real-time progress tracking.
-- 📦 **One-Click Batch ZIP Export**: Download all converted images bundled into a single `.zip` file with one click.
-- 🔍 **Interactive Side-by-Side Comparison**: Inspect Before vs. After results with side-by-side zoom, exact dimensions, and percentage of storage saved.
-- 📋 **Copy to System Clipboard**: Copy converted images directly to clipboard with a single click.
-- 📐 **Proportional Resizing with Dynamic Aspect Ratio Lock**: Smart recalculation of width and height preserving natural aspect ratios.
-- 🎨 **Transparency Background Control**: Select custom fill colors (white, black, or custom hex) when converting transparent images to formats without alpha channels (e.g., JPEG, BMP).
-- 🌙 **Persistent Theme**: Automatic system color scheme detection and persistent Dark/Light mode toggle.
-- 🎯 **Keyboard Shortcuts**:
-  - `Ctrl+O` / `Cmd+O`: Open files
-  - `Ctrl+Enter` / `Cmd+Enter`: Convert batch
-  - `Escape`: Close comparison modal
-
----
-
-## 🚀 Key Features
-
-- **Universal Conversion**: Seamless conversion between AVIF, WebP, JPEG, PNG, BMP, TIFF, and GIF.
-- **Precision Target File Size**: Specify a target size in KB (e.g. 200 KB) and PixelPerfect performs binary search optimization to hit the target.
-- **Lossless Mode**: 100% pixel fidelity for graphic design and archival preservation.
-- **Format Explorer**: Built-in interactive guide outlining technical trade-offs, compression ratios, and optimal use cases for each image format.
-- **Full Window Drag & Drop**: Animated dropzone with drag-counter tracking across the entire window.
+- **v1.1.1**: Desktop storage optimizations (-71 MB Linux / -101 MB Windows via locale trimming, `app.asar` cleanup, and unused binary removal).
+- **v1.1.0**: Zero launch delay fixes, native BMP & TIFF 6.0 encoders, AVIF support, parallel batch worker pool, one-click ZIP export, side-by-side comparison modal, copy to clipboard, and dynamic aspect ratio lock.
 
 ---
 
 ## 💻 Downloads & Installation
 
-### Windows
-1. Download **`PixelPerfect-Converter-1.1.1-Portable.exe`** from the [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+### Android (7.0+)
+1. Download **`PixelPerfect-Converter-1.2.0-Android.apk`** (~240 KB) from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+2. Install the APK on your device. Converted images and `.zip` archives are saved directly to `Downloads/PixelPerfect/`.
+
+### Windows (10 / 11 64-bit)
+1. Download **`PixelPerfect-Converter-1.2.0-Portable.exe`** from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
 2. Run directly—no installation or admin rights required.
 
 ### Linux (Debian / Ubuntu / Mint / Pop!_OS)
-1. Download **`pixelperfect-converter_1.1.1_amd64.deb`** from the [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+1. Download **`pixelperfect-converter_1.2.0_amd64.deb`** from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
 2. Install via terminal:
    ```bash
-   sudo dpkg -i pixelperfect-converter_1.1.1_amd64.deb
+   sudo dpkg -i pixelperfect-converter_1.2.0_amd64.deb
    ```
-   Or open with your distribution's Software Installer.
 
 ---
 
 ## 🛠 Building from Source
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/pprpprppr/PixelPerfect.git
-cd PixelPerfect
-
-# 2. Install dependencies
+# Install dependencies
 npm install
 
-# 3. Run in development mode
+# Desktop development mode
 npm run electron:dev
 
-# 4. Build production packages (.deb and portable .exe)
+# Build Desktop packages (.deb and portable .exe)
 npm run electron:build
+
+# Build Android APK (requires Android SDK + Gradle)
+npm run android:build
+```
+
+---
+
+## ↩️ Rollback Instructions
+
+A clean rollback checkpoint before the theme/Android updates is preserved on both tag `v1.1.1` and branch `rollback/v1.1.1-desktop-only`:
+
+```bash
+# Switch to the pre-Android desktop-only state
+git checkout rollback/v1.1.1-desktop-only
+
+# Or reset main back to v1.1.1
+git reset --hard v1.1.1
 ```
 
 ---

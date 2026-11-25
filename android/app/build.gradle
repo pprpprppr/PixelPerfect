@@ -1,0 +1,64 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.pixelperfect.converter'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.pixelperfect.converter"
+        minSdk 24
+        targetSdk 35
+        versionCode 3
+        versionName "1.2.0"
+    }
+
+    signingConfigs {
+        release {
+            def ksFile = file("release.jks")
+            if (ksFile.exists()) {
+                storeFile ksFile
+                storePassword System.getenv("ANDROID_KEYSTORE_PASS") ?: "pixelperfect123"
+                keyAlias System.getenv("ANDROID_KEY_ALIAS") ?: "pixelperfect"
+                keyPassword System.getenv("ANDROID_KEY_PASS") ?: "pixelperfect123"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (file("release.jks").exists()) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+            }
+        }
+        debug {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}', 'META-INF/*.kotlin_module']
+        }
+    }
+
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
+    }
+}
+
+dependencies {
+    // Zero external libraries: uses pure Android SDK Activity + WebView for minimum APK size & RAM
+}

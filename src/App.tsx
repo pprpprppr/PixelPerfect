@@ -3,28 +3,34 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { 
   Upload, 
   Image as ImageIcon, 
   Download, 
   Trash2, 
-  Settings2, 
   Maximize2, 
   FileJson, 
   CheckCircle2, 
   AlertCircle,
   Loader2,
-  ChevronRight,
   ArrowRightLeft,
-  Info,
   Moon,
   Sun,
   FileText,
   Zap,
-  ShieldCheck
+  ShieldCheck,
+  Archive,
+  Copy,
+  Check,
+  Sparkles,
+  Sliders,
+  X,
+  ExternalLink,
+  ZoomIn
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import JSZip from 'jszip';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -40,9 +46,14 @@ import { Slider } from '@/components/ui/slider';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
-import { processImage, formatBytes, type OutputFormat, type ProcessedImage } from './lib/image-utils';
+import { 
+  processImage, 
+  formatBytes, 
+  calculateDimensions, 
+  type OutputFormat, 
+  type ProcessedImage 
+} from './lib/image-utils';
 
 interface FileItem {
   id: string;
@@ -51,66 +62,216 @@ interface FileItem {
   status: 'idle' | 'processing' | 'completed' | 'error';
   result?: ProcessedImage;
   error?: string;
+  origWidth?: number;
+  origHeight?: number;
 }
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'converter' | 'explorer'>('converter');
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  
+  // Dark mode with localStorage persistence
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem('pixelperfect_theme');
+    if (saved) return saved === 'dark';
+    return window.matchMedia('(prefers-color-scheme: dark)').matches;
+  });
+
   const [files, setFiles] = useState<FileItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
+  const [dragCounter, setDragCounter] = useState(0);
+
+  // Settings
   const [format, setFormat] = useState<OutputFormat>('image/jpeg');
-  const [quality, setQuality] = useState(80);
+  const [quality, setQuality] = useState(82);
   const [targetSizeKB, setTargetSizeKB] = useState<string>('');
   const [maxWidth, setMaxWidth] = useState<string>('');
   const [maxHeight, setMaxHeight] = useState<string>('');
-  const [isProcessingAll, setIsProcessingAll] = useState(false);
-  const [stripMetadata, setStripMetadata] = useState(true);
-  const [progressive, setProgressive] = useState(true);
+  const [lockAspectRatio, setLockAspectRatio] = useState(true);
+  const [backgroundColor, setBackgroundColor] = useState('#ffffff');
   const [lossless, setLossless] = useState(false);
+
+  // Processing state
+  const [isProcessingAll, setIsProcessingAll] = useState(false);
+  const [processingProgress, setProcessingProgress] = useState({ current: 0, total: 0 });
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // Comparison Modal state
+  const [inspectedItem, setInspectedItem] = useState<FileItem | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const onDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const droppedFiles = Array.from(e.dataTransfer.files).filter((f: File) => f.type.startsWith('image/')) as File[];
-    addFiles(droppedFiles);
+  // Sync dark mode class to <html>
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.setItem('pixelperfect_theme', 'dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.setItem('pixelperfect_theme', 'light');
+    }
+  }, [isDarkMode]);
+
+  // Clean up created URLs on unmount
+  useEffect(() => {
+    return () => {
+      files.forEach(f => {
+        URL.revokeObjectURL(f.preview);
+        if (f.result?.url) URL.revokeObjectURL(f.result.url);
+      });
+    };
   }, []);
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'o') {
+        e.preventDefault();
+        fileInputRef.current?.click();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (files.length > 0 && !isProcessingAll) {
+          processAll();
+        }
+      }
+      if (e.key === 'Escape') {
+        setInspectedItem(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [files, isProcessingAll]);
+
+  // Full-window drag and drop handling
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragCounter(prev => prev + 1);
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragCounter(prev => {
+      const next = prev - 1;
+      if (next <= 0) {
+        setIsDragging(false);
+        return 0;
+      }
+      return next;
+    });
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    setDragCounter(0);
+    const droppedFiles = (Array.from(e.dataTransfer.files) as File[]).filter((f: File) => 
+      f.type.startsWith('image/') || /\.(png|jpe?g|webp|avif|bmp|tiff?|gif|svg)$/i.test(f.name)
+    );
+    if (droppedFiles.length > 0) {
+      addFiles(droppedFiles);
+    }
+  };
+
   const addFiles = (newFiles: File[]) => {
-    const items: FileItem[] = newFiles.map(file => ({
-      id: Math.random().toString(36).substring(7),
-      file,
-      preview: URL.createObjectURL(file),
-      status: 'idle'
-    }));
+    const items: FileItem[] = newFiles.map(file => {
+      const preview = URL.createObjectURL(file);
+      const item: FileItem = {
+        id: Math.random().toString(36).substring(2, 9),
+        file,
+        preview,
+        status: 'idle'
+      };
+
+      // Probe image dimensions asynchronously
+      const img = new Image();
+      img.onload = () => {
+        setFiles(prev => prev.map(f => f.id === item.id ? { 
+          ...f, 
+          origWidth: img.naturalWidth || img.width, 
+          origHeight: img.naturalHeight || img.height 
+        } : f));
+      };
+      img.src = preview;
+
+      return item;
+    });
     setFiles(prev => [...prev, ...items]);
   };
 
   const removeFile = (id: string) => {
     setFiles(prev => {
-      const filtered = prev.filter(f => f.id !== id);
       const removed = prev.find(f => f.id === id);
-      if (removed) URL.revokeObjectURL(removed.preview);
-      return filtered;
+      if (removed) {
+        URL.revokeObjectURL(removed.preview);
+        if (removed.result?.url) URL.revokeObjectURL(removed.result.url);
+      }
+      return prev.filter(f => f.id !== id);
     });
   };
 
   const clearFiles = () => {
-    files.forEach(f => URL.revokeObjectURL(f.preview));
+    files.forEach(f => {
+      URL.revokeObjectURL(f.preview);
+      if (f.result?.url) URL.revokeObjectURL(f.result.url);
+    });
     setFiles([]);
   };
 
+  const clearCompleted = () => {
+    setFiles(prev => {
+      const kept: FileItem[] = [];
+      prev.forEach(f => {
+        if (f.status === 'completed') {
+          URL.revokeObjectURL(f.preview);
+          if (f.result?.url) URL.revokeObjectURL(f.result.url);
+        } else {
+          kept.push(f);
+        }
+      });
+      return kept;
+    });
+  };
+
+  // Handle aspect ratio auto-calculation when typing Width or Height
+  const handleWidthChange = (val: string) => {
+    setMaxWidth(val);
+    if (lockAspectRatio && val && files.length > 0) {
+      const first = files.find(f => f.origWidth && f.origHeight);
+      if (first && first.origWidth && first.origHeight) {
+        const numW = parseFloat(val);
+        if (!isNaN(numW)) {
+          const ratio = first.origHeight / first.origWidth;
+          setMaxHeight(Math.round(numW * ratio).toString());
+        }
+      }
+    }
+  };
+
+  const handleHeightChange = (val: string) => {
+    setMaxHeight(val);
+    if (lockAspectRatio && val && files.length > 0) {
+      const first = files.find(f => f.origWidth && f.origHeight);
+      if (first && first.origWidth && first.origHeight) {
+        const numH = parseFloat(val);
+        if (!isNaN(numH)) {
+          const ratio = first.origWidth / first.origHeight;
+          setMaxWidth(Math.round(numH * ratio).toString());
+        }
+      }
+    }
+  };
+
+  // Process a single file
   const handleProcess = async (id: string) => {
     const item = files.find(f => f.id === id);
     if (!item || item.status === 'processing') return;
 
-    // Cleanup previous result URL if it exists
     if (item.result?.url) {
       URL.revokeObjectURL(item.result.url);
     }
 
-    setFiles(prev => prev.map(f => f.id === id ? { ...f, status: 'processing', result: undefined } : f));
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, status: 'processing', result: undefined, error: undefined } : f));
 
     try {
       const result = await processImage(item.file, {
@@ -119,72 +280,184 @@ export default function App() {
         targetSizeKB: targetSizeKB ? parseInt(targetSizeKB) : undefined,
         maxWidth: maxWidth ? parseInt(maxWidth) : undefined,
         maxHeight: maxHeight ? parseInt(maxHeight) : undefined,
-        stripMetadata,
-        progressive,
+        backgroundColor,
       });
 
-      setFiles(prev => prev.map(f => f.id === id ? { ...f, status: 'completed', result } : f));
-    } catch (err) {
-      setFiles(prev => prev.map(f => f.id === id ? { ...f, status: 'error', error: 'Failed to process' } : f));
+      setFiles(prev => prev.map(f => f.id === id ? { 
+        ...f, 
+        status: 'completed', 
+        result,
+        origWidth: result.originalWidth,
+        origHeight: result.originalHeight
+      } : f));
+    } catch (err: any) {
+      setFiles(prev => prev.map(f => f.id === id ? { ...f, status: 'error', error: err?.message || 'Processing failed' } : f));
     }
   };
 
+  // High performance parallel batch processing (4 concurrent workers)
   const processAll = async () => {
+    if (files.length === 0 || isProcessingAll) return;
     setIsProcessingAll(true);
-    // Process all files in the queue, even if completed, to apply new settings
-    for (const file of files) {
-      await handleProcess(file.id);
-    }
+    setProcessingProgress({ current: 0, total: files.length });
+
+    const queue = [...files];
+    let completedCount = 0;
+    const concurrency = 4;
+
+    const worker = async () => {
+      while (queue.length > 0) {
+        const item = queue.shift();
+        if (!item) break;
+        await handleProcess(item.id);
+        completedCount++;
+        setProcessingProgress({ current: completedCount, total: files.length });
+      }
+    };
+
+    const workers = Array.from({ length: Math.min(concurrency, files.length) }, () => worker());
+    await Promise.all(workers);
+
     setIsProcessingAll(false);
   };
 
+  // Download a single converted image
   const downloadImage = (result: ProcessedImage) => {
     const link = document.createElement('a');
     link.href = result.url;
     link.download = result.name;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
   };
 
-  const toggleDarkMode = () => {
-    setIsDarkMode(!isDarkMode);
-    document.documentElement.classList.toggle('dark');
+  // Download all completed images as a ZIP archive
+  const downloadAllAsZip = async () => {
+    const completedFiles = files.filter(f => f.status === 'completed' && f.result);
+    if (completedFiles.length === 0) return;
+
+    const zip = new JSZip();
+    completedFiles.forEach((item) => {
+      if (item.result) {
+        zip.file(item.result.name, item.result.blob);
+      }
+    });
+
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const zipUrl = URL.createObjectURL(zipBlob);
+    const link = document.createElement('a');
+    link.href = zipUrl;
+    link.download = `pixelperfect-batch-${Date.now()}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(zipUrl), 2000);
   };
+
+  // Copy converted image to clipboard
+  const copyToClipboard = async (item: FileItem) => {
+    if (!item.result) return;
+    try {
+      // Clipboard write supports image/png natively in Chromium
+      if (item.result.blob.type === 'image/png') {
+        await navigator.clipboard.write([
+          new ClipboardItem({ 'image/png': item.result.blob })
+        ]);
+      } else {
+        // Convert to PNG blob for clipboard
+        const img = new Image();
+        img.src = item.result.url;
+        await new Promise(r => { img.onload = r; });
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0);
+        canvas.toBlob(async (blob) => {
+          if (blob) {
+            await navigator.clipboard.write([
+              new ClipboardItem({ 'image/png': blob })
+            ]);
+          }
+        }, 'image/png');
+      }
+      setCopiedId(item.id);
+      setTimeout(() => setCopiedId(null), 2000);
+    } catch (err) {
+      console.warn('Clipboard write failed:', err);
+    }
+  };
+
+  const completedCount = files.filter(f => f.status === 'completed').length;
+  const queueTotalBytes = files.reduce((acc, f) => acc + f.file.size, 0);
+  const processedTotalBytes = files.reduce((acc, f) => acc + (f.result?.size || 0), 0);
+  const totalSavingsBytes = queueTotalBytes > 0 && processedTotalBytes > 0 ? queueTotalBytes - processedTotalBytes : 0;
+  const savingsPercent = queueTotalBytes > 0 && totalSavingsBytes > 0 ? Math.round((totalSavingsBytes / queueTotalBytes) * 100) : 0;
 
   return (
-    <div className={cn(
-      "flex h-screen w-full font-sans overflow-hidden transition-colors duration-300",
-      isDarkMode ? "bg-[#0f172a] text-slate-200" : "bg-[#f0f2f5] text-[#1e293b]"
-    )}>
+    <div 
+      onDragEnter={handleDragEnter}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      className={cn(
+        "relative flex h-screen w-full font-sans overflow-hidden transition-colors duration-200 select-none",
+        isDarkMode ? "bg-[#0f172a] text-slate-100" : "bg-[#f8fafc] text-[#0f172a]"
+      )}
+    >
+      {/* Drag & Drop Full Window Overlay */}
+      <AnimatePresence>
+        {isDragging && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-indigo-600/90 backdrop-blur-md text-white pointer-events-none"
+          >
+            <motion.div 
+              animate={{ scale: [1, 1.08, 1] }} 
+              transition={{ repeat: Infinity, duration: 1.5 }}
+              className="flex flex-col items-center"
+            >
+              <Upload className="w-20 h-20 mb-4 animate-bounce" />
+              <h2 className="text-3xl font-black tracking-tight">Drop Images Here</h2>
+              <p className="text-indigo-100 mt-2 text-sm font-medium">Instantly add to conversion queue</p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Sidebar */}
       <aside className={cn(
-        "w-[260px] border-r flex flex-col p-6 shrink-0 transition-colors duration-300",
-        isDarkMode ? "bg-[#1e293b] border-slate-800" : "bg-white border-[#e2e8f0]"
+        "w-[260px] border-r flex flex-col p-6 shrink-0 transition-colors duration-200 z-10",
+        isDarkMode ? "bg-[#131d31] border-slate-800" : "bg-white border-[#e2e8f0]"
       )}>
         <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-2 text-[#4f46e5] font-extrabold text-xl">
-            <span className="text-2xl">◈</span> PixelPerfect
+          <div className="flex items-center gap-2.5 text-[#4f46e5] font-black text-xl tracking-tight">
+            <span className="text-2xl drop-shadow-sm">◈</span> PixelPerfect
           </div>
           <Button 
             variant="ghost" 
             size="icon" 
-            onClick={toggleDarkMode}
+            onClick={() => setIsDarkMode(!isDarkMode)}
+            title={isDarkMode ? "Switch to Light Mode" : "Switch to Dark Mode"}
             className={cn(
-              "h-8 w-8 rounded-full",
-              isDarkMode ? "text-yellow-400 hover:bg-slate-800" : "text-slate-500 hover:bg-slate-100"
+              "h-8 w-8 rounded-lg transition-all",
+              isDarkMode ? "text-amber-400 hover:bg-slate-800" : "text-slate-500 hover:bg-slate-100"
             )}
           >
             {isDarkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           </Button>
         </div>
         
-        <nav className="space-y-1">
+        <nav className="space-y-1.5">
           <div 
             onClick={() => setActiveTab('converter')}
             className={cn(
-              "flex items-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm cursor-pointer transition-all",
+              "flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-medium text-sm cursor-pointer transition-all",
               activeTab === 'converter' 
-                ? (isDarkMode ? "bg-[#4f46e5]/20 text-[#818cf8]" : "bg-[#f5f3ff] text-[#4f46e5]")
-                : (isDarkMode ? "text-slate-400 hover:bg-slate-800" : "text-[#64748b] hover:bg-[#f8fafc]")
+                ? (isDarkMode ? "bg-indigo-600/20 text-indigo-400 font-semibold" : "bg-indigo-50 text-indigo-600 font-semibold")
+                : (isDarkMode ? "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200" : "text-slate-600 hover:bg-slate-100")
             )}
           >
             <ArrowRightLeft className="w-4 h-4" />
@@ -193,10 +466,10 @@ export default function App() {
           <div 
             onClick={() => setActiveTab('explorer')}
             className={cn(
-              "flex items-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm cursor-pointer transition-all",
+              "flex items-center gap-3 px-3.5 py-2.5 rounded-xl font-medium text-sm cursor-pointer transition-all",
               activeTab === 'explorer'
-                ? (isDarkMode ? "bg-[#4f46e5]/20 text-[#818cf8]" : "bg-[#f5f3ff] text-[#4f46e5]")
-                : (isDarkMode ? "text-slate-400 hover:bg-slate-800" : "text-[#64748b] hover:bg-[#f8fafc]")
+                ? (isDarkMode ? "bg-indigo-600/20 text-indigo-400 font-semibold" : "bg-indigo-50 text-indigo-600 font-semibold")
+                : (isDarkMode ? "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200" : "text-slate-600 hover:bg-slate-100")
             )}
           >
             <ImageIcon className="w-4 h-4" />
@@ -204,27 +477,67 @@ export default function App() {
           </div>
         </nav>
 
-        <div className="mt-8 flex-1">
-          <h3 className={cn(
-            "text-[11px] uppercase tracking-wider font-bold mb-4",
-            isDarkMode ? "text-slate-500" : "text-[#64748b]"
-          )}>Recent Activity</h3>
-          <ScrollArea className="h-[200px]">
-            <div className="space-y-3">
-              {files.filter(f => f.status === 'completed').length === 0 ? (
-                <p className={cn("text-xs italic", isDarkMode ? "text-slate-600" : "text-[#94a3b8]")}>No recent activity</p>
-              ) : (
-                files.filter(f => f.status === 'completed').map(f => (
-                  <div key={f.id} className={cn(
-                    "text-xs py-2 border-b truncate",
-                    isDarkMode ? "text-slate-400 border-slate-800" : "text-[#64748b] border-[#e2e8f0]"
-                  )}>
-                    {f.file.name} → {format.split('/')[1].toUpperCase()}
+        {/* Queue Overview */}
+        <div className="mt-8 pt-6 border-t border-slate-200 dark:border-slate-800 flex flex-col flex-1 min-h-0">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className={cn(
+              "text-[11px] uppercase tracking-wider font-bold",
+              isDarkMode ? "text-slate-400" : "text-slate-500"
+            )}>Queue ({files.length})</h3>
+            {files.length > 0 && (
+              <button 
+                onClick={clearFiles}
+                className="text-[11px] text-red-500 hover:text-red-400 font-semibold hover:underline"
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+
+          <ScrollArea className="flex-1 pr-2">
+            {files.length === 0 ? (
+              <p className={cn("text-xs italic py-4 text-center", isDarkMode ? "text-slate-500" : "text-slate-400")}>
+                No images queued
+              </p>
+            ) : (
+              <div className="space-y-1.5">
+                {files.map(f => (
+                  <div 
+                    key={f.id} 
+                    onClick={() => f.result && setInspectedItem(f)}
+                    className={cn(
+                      "text-xs px-2.5 py-2 rounded-lg flex items-center justify-between group cursor-pointer transition-colors",
+                      isDarkMode ? "hover:bg-slate-800/70 text-slate-300" : "hover:bg-slate-100 text-slate-700"
+                    )}
+                  >
+                    <span className="truncate max-w-[140px] font-medium">{f.file.name}</span>
+                    {f.status === 'completed' ? (
+                      <span className="text-[10px] text-emerald-500 font-bold shrink-0">✓ Done</span>
+                    ) : f.status === 'processing' ? (
+                      <Loader2 className="w-3 h-3 text-indigo-500 animate-spin shrink-0" />
+                    ) : (
+                      <span className="text-[10px] text-slate-400 shrink-0">Ready</span>
+                    )}
                   </div>
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
           </ScrollArea>
+
+          {/* Quick Shortcuts info */}
+          <div className={cn(
+            "mt-4 p-3 rounded-xl border text-[11px] space-y-1",
+            isDarkMode ? "bg-slate-900/60 border-slate-800 text-slate-400" : "bg-slate-50 border-slate-200 text-slate-500"
+          )}>
+            <div className="flex justify-between">
+              <span>Add images:</span>
+              <kbd className="font-mono bg-slate-200 dark:bg-slate-800 px-1 rounded text-[10px]">Ctrl+O</kbd>
+            </div>
+            <div className="flex justify-between">
+              <span>Convert batch:</span>
+              <kbd className="font-mono bg-slate-200 dark:bg-slate-800 px-1 rounded text-[10px]">Ctrl+Enter</kbd>
+            </div>
+          </div>
         </div>
       </aside>
 
@@ -232,26 +545,50 @@ export default function App() {
       <main className="flex-1 flex flex-col p-8 gap-6 overflow-hidden">
         {activeTab === 'converter' ? (
           <>
-            <header className="flex justify-between items-center">
-              <h1 className={cn("text-2xl font-bold", isDarkMode ? "text-white" : "text-[#1e293b]")}>Universal Converter</h1>
-              <div className={cn("text-sm font-medium", isDarkMode ? "text-slate-400" : "text-[#64748b]")}>
-                {files.length === 0 ? "Ready to convert" : `${files.length} File(s) Ready`}
+            <header className="flex justify-between items-center shrink-0">
+              <div>
+                <h1 className="text-2xl font-black tracking-tight">Universal Image Converter</h1>
+                <p className={cn("text-xs mt-0.5", isDarkMode ? "text-slate-400" : "text-slate-500")}>
+                  Fast, offline desktop conversion with high-fidelity encoding & compression
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {completedCount > 0 && (
+                  <>
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={clearCompleted}
+                      className={cn(
+                        "text-xs font-semibold h-9 rounded-xl",
+                        isDarkMode ? "border-slate-700 hover:bg-slate-800" : "border-slate-200 hover:bg-slate-100"
+                      )}
+                    >
+                      Clear Done
+                    </Button>
+                    <Button 
+                      onClick={downloadAllAsZip}
+                      size="sm"
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs h-9 rounded-xl shadow-sm flex items-center gap-1.5"
+                    >
+                      <Archive className="w-3.5 h-3.5" />
+                      Download All (.ZIP)
+                    </Button>
+                  </>
+                )}
               </div>
             </header>
 
-            {/* Simple Upload Section */}
+            {/* Upload Drop Zone */}
             <div 
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={onDrop}
               onClick={() => fileInputRef.current?.click()}
               className={cn(
-                "relative shrink-0 min-h-[240px] border-2 border-dashed rounded-2xl flex flex-col items-center justify-center p-10 text-center cursor-pointer transition-all duration-300",
-                isDragging 
-                  ? (isDarkMode ? "border-[#4f46e5] bg-[#4f46e5]/10" : "border-[#4f46e5] bg-[#4f46e5]/5")
-                  : (isDarkMode 
-                      ? "border-slate-700 bg-slate-800/50 hover:bg-slate-800" 
-                      : "border-[#4f46e5]/30 bg-[#4f46e5]/[0.03] hover:bg-[#4f46e5]/[0.05]")
+                "relative shrink-0 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center p-8 text-center cursor-pointer transition-all duration-200",
+                files.length === 0 ? "min-h-[220px]" : "min-h-[140px] py-6",
+                isDarkMode 
+                  ? "border-slate-700 bg-slate-800/40 hover:bg-slate-800/80 hover:border-indigo-500/60" 
+                  : "border-indigo-200 bg-indigo-50/30 hover:bg-indigo-50/70 hover:border-indigo-500/60"
               )}
             >
               <input 
@@ -259,143 +596,234 @@ export default function App() {
                 ref={fileInputRef}
                 onChange={(e) => e.target.files && addFiles(Array.from(e.target.files))}
                 multiple 
-                accept="image/*"
+                accept="image/*,.png,.jpg,.jpeg,.webp,.avif,.bmp,.tiff,.tif,.gif,.svg"
                 className="hidden"
               />
               <div className={cn(
-                "w-20 h-20 rounded-full flex items-center justify-center mb-6 shadow-lg",
-                isDarkMode ? "bg-slate-700 text-[#818cf8]" : "bg-[#f5f3ff] text-[#4f46e5]"
+                "rounded-2xl flex items-center justify-center mb-3 shadow-md transition-transform group-hover:scale-105",
+                files.length === 0 ? "w-16 h-16" : "w-12 h-12 mb-2",
+                isDarkMode ? "bg-indigo-500/20 text-indigo-400" : "bg-indigo-100 text-indigo-600"
               )}>
-                <Upload className="w-10 h-10" />
+                <Upload className={files.length === 0 ? "w-8 h-8" : "w-6 h-6"} />
               </div>
-              <div className={cn("text-xl font-bold mb-2", isDarkMode ? "text-white" : "text-[#1e293b]")}>
-                {files.length === 0 ? "Upload Image to Convert" : "Add More Images"}
+              <div className="text-base font-bold">
+                {files.length === 0 ? "Upload Images to Convert" : "Add More Images"}
               </div>
-              <p className={cn("text-sm max-w-md mx-auto", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>
-                Drag and drop your images here or click to browse. 
-                <br />
-                Supports JPEG, PNG, WebP, BMP, TIFF, GIF.
+              <p className={cn("text-xs mt-1 max-w-md", isDarkMode ? "text-slate-400" : "text-slate-500")}>
+                Drop images here or click to browse. Supports JPEG, PNG, WebP, AVIF, BMP, TIFF, GIF.
               </p>
             </div>
 
-            {/* File List / Detected Formats */}
+            {/* Batch Progress Bar (Visible during batch processing) */}
+            {isProcessingAll && (
+              <div className={cn(
+                "p-4 rounded-xl border flex flex-col gap-2 shrink-0 animate-in fade-in duration-200",
+                isDarkMode ? "bg-slate-800/80 border-indigo-500/40" : "bg-indigo-50/70 border-indigo-200"
+              )}>
+                <div className="flex justify-between items-center text-xs font-semibold">
+                  <span className="flex items-center gap-2 text-indigo-500">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Converting batch: {processingProgress.current} of {processingProgress.total} completed
+                  </span>
+                  <span className="font-mono font-bold">
+                    {Math.round((processingProgress.current / Math.max(1, processingProgress.total)) * 100)}%
+                  </span>
+                </div>
+                <div className="w-full bg-slate-200 dark:bg-slate-700 h-2 rounded-full overflow-hidden">
+                  <div 
+                    className="bg-indigo-600 h-full rounded-full transition-all duration-300"
+                    style={{ width: `${(processingProgress.current / Math.max(1, processingProgress.total)) * 100}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* File List Grid */}
             <div className={cn(
-              "flex-1 rounded-xl shadow-sleek border flex flex-col overflow-hidden min-h-0 transition-colors duration-300",
-              isDarkMode ? "bg-[#1e293b] border-slate-800" : "bg-white border-[#e2e8f0]"
+              "flex-1 rounded-2xl shadow-sm border flex flex-col overflow-hidden min-h-0 transition-colors duration-200",
+              isDarkMode ? "bg-[#131d31] border-slate-800" : "bg-white border-[#e2e8f0]"
             )}>
               <div className={cn(
-                "grid grid-cols-[48px_1fr_120px_120px_100px_80px] items-center px-6 py-3 border-b text-[11px] font-bold uppercase tracking-wider",
-                isDarkMode ? "border-slate-800 text-slate-500" : "border-[#e2e8f0] text-[#94a3b8]"
+                "grid grid-cols-[40px_1fr_120px_130px_110px_120px] items-center px-6 py-3 border-b text-[11px] font-bold uppercase tracking-wider",
+                isDarkMode ? "border-slate-800 text-slate-400" : "border-slate-200 text-slate-500"
               )}>
                 <span></span>
                 <span>Name</span>
-                <span>Detected Format</span>
+                <span>Dimensions</span>
                 <span>Size</span>
                 <span>Status</span>
-                <span className="text-right">Action</span>
+                <span className="text-right">Actions</span>
               </div>
               
               <ScrollArea className="flex-1">
                 <AnimatePresence mode="popLayout">
                   {files.length === 0 ? (
-                    <div className={cn("h-full flex flex-col items-center justify-center py-20", isDarkMode ? "text-slate-600" : "text-[#94a3b8]")}>
-                      <ImageIcon className="w-12 h-12 mb-2 opacity-20" />
-                      <p className="text-sm font-medium">No images uploaded yet</p>
+                    <div className={cn("h-full flex flex-col items-center justify-center py-24", isDarkMode ? "text-slate-600" : "text-slate-400")}>
+                      <ImageIcon className="w-12 h-12 mb-3 opacity-30" />
+                      <p className="text-sm font-semibold">No images in queue</p>
+                      <p className="text-xs mt-1">Drag and drop images to begin</p>
                     </div>
                   ) : (
-                    <div className={cn("divide-y", isDarkMode ? "divide-slate-800" : "divide-[#e2e8f0]")}>
-                      {files.map((item) => (
-                        <motion.div
-                          key={item.id}
-                          initial={{ opacity: 0, y: 10 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, scale: 0.95 }}
-                          transition={{ duration: 0.2 }}
-                          className={cn(
-                            "grid grid-cols-[48px_1fr_120px_120px_100px_80px] items-center px-6 py-4 transition-colors",
-                            isDarkMode ? "hover:bg-slate-800/50" : "hover:bg-[#f8fafc]"
-                          )}
-                        >
-                          <div className={cn(
-                            "w-8 h-8 rounded flex items-center justify-center text-lg",
-                            isDarkMode ? "bg-slate-700" : "bg-[#f1f5f9]"
-                          )}>
-                            {item.file.type.includes('png') ? '🎨' : item.file.type.includes('webp') ? '🖼' : '📷'}
-                          </div>
-                          
-                          <div className={cn("text-sm font-medium truncate pr-4", isDarkMode ? "text-slate-200" : "text-[#1e293b]")}>
-                            {item.file.name}
-                          </div>
+                    <div className={cn("divide-y", isDarkMode ? "divide-slate-800/80" : "divide-slate-100")}>
+                      {files.map((item) => {
+                        const hasSavings = item.result && item.result.size < item.file.size;
+                        const savings = item.result ? Math.round(((item.file.size - item.result.size) / item.file.size) * 100) : 0;
 
-                          <div className="flex items-center">
-                            <Badge variant="secondary" className={cn(
-                              "text-[10px] font-bold uppercase",
-                              isDarkMode ? "bg-slate-800 text-slate-400" : "bg-slate-100 text-slate-600"
-                            )}>
-                              {item.file.type.split('/')[1].toUpperCase()}
-                            </Badge>
-                          </div>
-
-                          <div className={cn("text-sm", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>
-                            {formatBytes(item.file.size)}
-                          </div>
-
-                          <div className="text-sm font-bold">
-                            {item.status === 'completed' ? (
-                              <span className="text-[#10b981]">Ready</span>
-                            ) : item.status === 'processing' ? (
-                              <span className="text-[#4f46e5] flex items-center gap-2">
-                                <Loader2 className="w-3 h-3 animate-spin" />
-                                Active
-                              </span>
-                            ) : item.status === 'error' ? (
-                              <span className="text-red-500">Error</span>
-                            ) : (
-                              <span className={isDarkMode ? "text-slate-600" : "text-[#94a3b8]"}>Idle</span>
+                        return (
+                          <motion.div
+                            key={item.id}
+                            initial={{ opacity: 0, y: 8 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95 }}
+                            transition={{ duration: 0.15 }}
+                            className={cn(
+                              "grid grid-cols-[40px_1fr_120px_130px_110px_120px] items-center px-6 py-3.5 transition-colors",
+                              isDarkMode ? "hover:bg-slate-800/40" : "hover:bg-slate-50"
                             )}
-                          </div>
-
-                          <div className="flex items-center justify-end gap-1">
-                            {item.status === 'completed' && item.result ? (
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                onClick={() => downloadImage(item.result!)}
-                                className={cn(
-                                  "h-8 w-8",
-                                  isDarkMode ? "text-[#818cf8] hover:bg-[#4f46e5]/20" : "text-[#4f46e5] hover:bg-[#f5f3ff]"
-                                )}
-                              >
-                                <Download className="w-4 h-4" />
-                              </Button>
-                            ) : (
-                              <Button 
-                                variant="ghost" 
-                                size="icon" 
-                                onClick={() => handleProcess(item.id)}
-                                disabled={item.status === 'processing'}
-                                className={cn(
-                                  "h-8 w-8",
-                                  isDarkMode ? "text-slate-400 hover:text-[#818cf8]" : "text-[#64748b] hover:text-[#4f46e5]"
-                                )}
-                              >
-                                <ArrowRightLeft className="w-4 h-4" />
-                              </Button>
-                            )}
-                            <Button 
-                              variant="ghost" 
-                              size="icon" 
-                              onClick={() => removeFile(item.id)}
-                              className={cn(
-                                "h-8 w-8",
-                                isDarkMode ? "text-slate-600 hover:text-red-400" : "text-[#94a3b8] hover:text-red-500"
-                              )}
+                          >
+                            {/* Thumbnail */}
+                            <div 
+                              onClick={() => item.result && setInspectedItem(item)}
+                              className="w-8 h-8 rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 cursor-pointer shrink-0"
                             >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          </div>
-                        </motion.div>
-                      ))}
+                              <img 
+                                src={item.result?.url || item.preview} 
+                                alt={item.file.name} 
+                                className="w-full h-full object-cover" 
+                              />
+                            </div>
+                            
+                            {/* File name & format */}
+                            <div className="truncate pr-4">
+                              <div className="text-xs font-semibold truncate" title={item.file.name}>
+                                {item.file.name}
+                              </div>
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <span className="text-[10px] text-slate-400 uppercase font-mono">
+                                  {item.file.type.split('/')[1] || 'IMAGE'}
+                                </span>
+                                {item.result && (
+                                  <>
+                                    <span className="text-[10px] text-slate-400">→</span>
+                                    <span className="text-[10px] text-indigo-500 font-bold uppercase font-mono">
+                                      {item.result.format.split('/')[1]}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Dimensions */}
+                            <div className="text-xs font-mono text-slate-500 dark:text-slate-400">
+                              {item.origWidth && item.origHeight ? (
+                                item.result ? (
+                                  <span>{item.result.width}×{item.result.height}</span>
+                                ) : (
+                                  <span>{item.origWidth}×{item.origHeight}</span>
+                                )
+                              ) : (
+                                "—"
+                              )}
+                            </div>
+
+                            {/* Size & Savings */}
+                            <div className="text-xs">
+                              {item.result ? (
+                                <div>
+                                  <div className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                    {formatBytes(item.result.size)}
+                                  </div>
+                                  <div className="text-[10px] text-slate-400">
+                                    was {formatBytes(item.file.size)}
+                                    {hasSavings && (
+                                      <span className="text-emerald-500 ml-1 font-bold">(-{savings}%)</span>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-slate-500">{formatBytes(item.file.size)}</span>
+                              )}
+                            </div>
+
+                            {/* Status */}
+                            <div>
+                              {item.status === 'completed' ? (
+                                <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20 text-[10px] font-bold">
+                                  ✓ Converted
+                                </Badge>
+                              ) : item.status === 'processing' ? (
+                                <Badge variant="secondary" className="bg-indigo-500/10 text-indigo-500 border-indigo-500/20 text-[10px] font-bold flex items-center gap-1 w-fit">
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                  Active
+                                </Badge>
+                              ) : item.status === 'error' ? (
+                                <Badge variant="destructive" className="text-[10px] font-bold">
+                                  Failed
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-[10px] text-slate-400 border-slate-300 dark:border-slate-700">
+                                  Queued
+                                </Badge>
+                              )}
+                            </div>
+
+                            {/* Actions */}
+                            <div className="flex items-center justify-end gap-1">
+                              {item.status === 'completed' && item.result ? (
+                                <>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="icon" 
+                                    onClick={() => setInspectedItem(item)}
+                                    title="Compare Before & After"
+                                    className="h-8 w-8 text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+                                  >
+                                    <Maximize2 className="w-3.5 h-3.5" />
+                                  </Button>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="icon" 
+                                    onClick={() => copyToClipboard(item)}
+                                    title="Copy to clipboard"
+                                    className="h-8 w-8 text-slate-500 hover:text-indigo-500 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+                                  >
+                                    {copiedId === item.id ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                                  </Button>
+                                  <Button 
+                                    variant="ghost" 
+                                    size="icon" 
+                                    onClick={() => downloadImage(item.result!)}
+                                    title="Download image"
+                                    className="h-8 w-8 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </Button>
+                                </>
+                              ) : (
+                                <Button 
+                                  variant="ghost" 
+                                  size="icon" 
+                                  onClick={() => handleProcess(item.id)}
+                                  disabled={item.status === 'processing'}
+                                  title="Convert single image"
+                                  className="h-8 w-8 text-slate-500 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40"
+                                >
+                                  <ArrowRightLeft className="w-3.5 h-3.5" />
+                                </Button>
+                              )}
+                              <Button 
+                                variant="ghost" 
+                                size="icon" 
+                                onClick={() => removeFile(item.id)}
+                                title="Remove"
+                                className="h-8 w-8 text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </Button>
+                            </div>
+                          </motion.div>
+                        );
+                      })}
                     </div>
                   )}
                 </AnimatePresence>
@@ -415,179 +843,345 @@ export default function App() {
 
       {/* Right Settings Panel */}
       <aside className={cn(
-        "w-[320px] border-l flex flex-col p-6 shrink-0 overflow-y-auto transition-colors duration-300",
-        isDarkMode ? "bg-[#1e293b] border-slate-800" : "bg-white border-[#e2e8f0]"
+        "w-[320px] border-l flex flex-col p-6 shrink-0 overflow-y-auto transition-colors duration-200 z-10",
+        isDarkMode ? "bg-[#131d31] border-slate-800" : "bg-white border-[#e2e8f0]"
       )}>
-        <div className="space-y-8">
+        <div className="space-y-6">
+          {/* Format Selection */}
           <section>
-            <h2 className={cn("text-sm font-bold mb-4", isDarkMode ? "text-white" : "text-[#1e293b]")}>Output Settings</h2>
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label className={cn("text-[11px] font-semibold uppercase", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Convert To Format</Label>
-                <Select value={format} onValueChange={(v) => setFormat(v as OutputFormat)}>
-                  <SelectTrigger className={cn(
-                    "w-full rounded-lg h-10 focus:ring-[#4f46e5]",
-                    isDarkMode ? "bg-slate-800 border-slate-700 text-slate-200" : "bg-white border-[#e2e8f0]"
-                  )}>
-                    <SelectValue placeholder="Select format" />
-                  </SelectTrigger>
-                  <SelectContent className={isDarkMode ? "bg-slate-800 border-slate-700 text-slate-200" : "bg-white"}>
-                    <SelectItem value="image/jpeg">JPEG (.jpg)</SelectItem>
-                    <SelectItem value="image/png">PNG (.png)</SelectItem>
-                    <SelectItem value="image/webp">WebP (.webp)</SelectItem>
-                    <SelectItem value="image/bmp">BMP (.bmp)</SelectItem>
-                    <SelectItem value="image/tiff">TIFF (.tiff)</SelectItem>
-                    <SelectItem value="image/gif">GIF (.gif)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3 flex items-center gap-1.5">
+              <Sliders className="w-3.5 h-3.5 text-indigo-500" />
+              Target Format
+            </h2>
+            <div className="space-y-2">
+              <Select value={format} onValueChange={(v) => setFormat(v as OutputFormat)}>
+                <SelectTrigger className={cn(
+                  "w-full rounded-xl h-11 font-medium",
+                  isDarkMode ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white border-slate-200"
+                )}>
+                  <SelectValue placeholder="Select format" />
+                </SelectTrigger>
+                <SelectContent className={isDarkMode ? "bg-slate-800 border-slate-700 text-slate-100" : "bg-white"}>
+                  <SelectItem value="image/jpeg">JPEG (.jpg) — Universal</SelectItem>
+                  <SelectItem value="image/png">PNG (.png) — Lossless / Alpha</SelectItem>
+                  <SelectItem value="image/webp">WebP (.webp) — Modern Web</SelectItem>
+                  <SelectItem value="image/avif">AVIF (.avif) — Next-Gen High Efficiency</SelectItem>
+                  <SelectItem value="image/bmp">BMP (.bmp) — Uncompressed Bitmap</SelectItem>
+                  <SelectItem value="image/tiff">TIFF (.tiff) — Studio Baseline</SelectItem>
+                  <SelectItem value="image/gif">GIF (.gif) — Compact Graphics</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </section>
 
-          <section>
-            <h2 className={cn("text-sm font-bold mb-4", isDarkMode ? "text-white" : "text-[#1e293b]")}>Compression & Size</h2>
-            <div className="space-y-6">
-              <div className={cn(
-                "flex items-center justify-between p-3 rounded-lg border",
-                isDarkMode ? "bg-slate-800 border-slate-700" : "bg-[#f8fafc] border-[#e2e8f0]"
-              )}>
-                <div className="flex flex-col">
-                  <span className={cn("text-xs font-bold", isDarkMode ? "text-slate-200" : "text-[#1e293b]")}>Lossless Mode</span>
-                  <span className={cn("text-[10px]", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Maximize quality</span>
-                </div>
-                <input 
-                  type="checkbox" 
-                  checked={lossless} 
-                  onChange={(e) => setLossless(e.target.checked)}
-                  className="w-4 h-4 accent-[#4f46e5] cursor-pointer"
-                />
-              </div>
+          {/* Compression & Quality */}
+          <section className="space-y-4">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-indigo-500" />
+              Compression & Quality
+            </h2>
 
-              <div className="space-y-2">
-                <Label className={cn("text-[11px] font-semibold uppercase", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Target File Size (KB)</Label>
+            <div className={cn(
+              "flex items-center justify-between p-3 rounded-xl border transition-colors",
+              isDarkMode ? "bg-slate-800/60 border-slate-700" : "bg-slate-50 border-slate-200"
+            )}>
+              <div className="flex flex-col">
+                <span className="text-xs font-bold">Lossless Mode</span>
+                <span className="text-[10px] text-slate-400">100% pixel fidelity</span>
+              </div>
+              <input 
+                type="checkbox" 
+                checked={lossless} 
+                onChange={(e) => setLossless(e.target.checked)}
+                className="w-4 h-4 accent-indigo-600 cursor-pointer"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-[11px] font-semibold text-slate-500 uppercase">Target Max Size (KB)</Label>
+              <Input 
+                type="number" 
+                value={targetSizeKB}
+                onChange={(e) => setTargetSizeKB(e.target.value)}
+                placeholder="e.g. 250 (Optional)"
+                disabled={lossless}
+                className={cn(
+                  "rounded-xl h-10 text-xs font-mono",
+                  isDarkMode ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200"
+                )}
+              />
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex justify-between items-center">
+                <Label className="text-[11px] font-semibold text-slate-500 uppercase">Quality Strength</Label>
+                <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400">
+                  {lossless ? '100%' : `${quality}%`}
+                </span>
+              </div>
+              <Slider 
+                value={[quality]} 
+                onValueChange={(vals) => setQuality(vals[0])} 
+                min={10} 
+                max={100} 
+                step={1}
+                disabled={lossless}
+                className={cn("w-full cursor-pointer", lossless && "opacity-40 pointer-events-none")}
+              />
+            </div>
+          </section>
+
+          {/* Background fill for transparent images */}
+          {(format === 'image/jpeg' || format === 'image/bmp') && (
+            <section className="space-y-2.5">
+              <Label className="text-[11px] font-semibold text-slate-500 uppercase">
+                Transparency Background
+              </Label>
+              <div className="flex items-center gap-2">
+                <div 
+                  className="w-8 h-8 rounded-lg border shadow-sm shrink-0" 
+                  style={{ backgroundColor }} 
+                />
                 <Input 
-                  type="number" 
-                  value={targetSizeKB}
-                  onChange={(e) => setTargetSizeKB(e.target.value)}
-                  placeholder="e.g. 500"
-                  disabled={lossless}
+                  type="text" 
+                  value={backgroundColor} 
+                  onChange={(e) => setBackgroundColor(e.target.value)}
+                  placeholder="#ffffff"
                   className={cn(
-                    "rounded-lg h-10 focus:ring-[#4f46e5] disabled:opacity-50",
-                    isDarkMode ? "bg-slate-800 border-slate-700 text-slate-200" : "bg-white border-[#e2e8f0]"
+                    "rounded-xl h-9 text-xs font-mono uppercase",
+                    isDarkMode ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200"
                   )}
                 />
+                <Button 
+                  size="sm" 
+                  variant="outline" 
+                  onClick={() => setBackgroundColor(backgroundColor === '#ffffff' ? '#000000' : '#ffffff')}
+                  className="h-9 px-2 text-xs"
+                >
+                  {backgroundColor === '#ffffff' ? 'Black' : 'White'}
+                </Button>
               </div>
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <Label className={cn("text-[11px] font-semibold uppercase", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Optimization Strength</Label>
-                  <span className="text-xs font-bold text-[#4f46e5]">{lossless ? '100' : quality}%</span>
-                </div>
-                <Slider 
-                  value={[quality]} 
-                  onValueChange={(vals) => setQuality(vals[0])} 
-                  min={1}
-                  max={100} 
-                  step={1}
-                  disabled={lossless}
-                  className={cn("w-full cursor-pointer", lossless && "opacity-50 pointer-events-none")}
-                />
-              </div>
-            </div>
-          </section>
+            </section>
+          )}
 
-          <section>
-            <h2 className={cn("text-sm font-bold mb-4", isDarkMode ? "text-white" : "text-[#1e293b]")}>Advanced (jpegoptim)</h2>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <Label className={cn("text-xs font-medium", isDarkMode ? "text-slate-400" : "text-[#64748b]")}>Strip All Metadata</Label>
-                <input 
-                  type="checkbox" 
-                  checked={stripMetadata} 
-                  onChange={(e) => setStripMetadata(e.target.checked)}
-                  className="w-4 h-4 accent-[#4f46e5] cursor-pointer"
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <Label className={cn("text-xs font-medium", isDarkMode ? "text-slate-400" : "text-[#64748b]")}>Progressive Encoding</Label>
-                <input 
-                  type="checkbox" 
-                  checked={progressive} 
-                  onChange={(e) => setProgressive(e.target.checked)}
-                  className="w-4 h-4 accent-[#4f46e5] cursor-pointer"
-                />
-              </div>
-            </div>
-          </section>
-
-          <section>
-            <h2 className={cn("text-sm font-bold mb-4", isDarkMode ? "text-white" : "text-[#1e293b]")}>Resize (Dimensions)</h2>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label className={cn("text-[11px] font-semibold uppercase", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Width (px)</Label>
+          {/* Resize Controls */}
+          <section className="space-y-3">
+            <h2 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+              Resize Dimensions (px)
+            </h2>
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-semibold text-slate-500 uppercase">Width</Label>
                 <Input 
                   type="number" 
                   value={maxWidth}
-                  onChange={(e) => setMaxWidth(e.target.value)}
+                  onChange={(e) => handleWidthChange(e.target.value)}
                   placeholder="Auto"
                   className={cn(
-                    "rounded-lg h-10 focus:ring-[#4f46e5]",
-                    isDarkMode ? "bg-slate-800 border-slate-700 text-slate-200" : "bg-white border-[#e2e8f0]"
+                    "rounded-xl h-10 text-xs font-mono",
+                    isDarkMode ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200"
                   )}
                 />
               </div>
-              <div className="space-y-2">
-                <Label className={cn("text-[11px] font-semibold uppercase", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Height (px)</Label>
+              <div className="space-y-1.5">
+                <Label className="text-[11px] font-semibold text-slate-500 uppercase">Height</Label>
                 <Input 
                   type="number" 
                   value={maxHeight}
-                  onChange={(e) => setMaxHeight(e.target.value)}
+                  onChange={(e) => handleHeightChange(e.target.value)}
                   placeholder="Auto"
                   className={cn(
-                    "rounded-lg h-10 focus:ring-[#4f46e5]",
-                    isDarkMode ? "bg-slate-800 border-slate-700 text-slate-200" : "bg-white border-[#e2e8f0]"
+                    "rounded-xl h-10 text-xs font-mono",
+                    isDarkMode ? "bg-slate-800 border-slate-700" : "bg-white border-slate-200"
                   )}
                 />
               </div>
             </div>
-            <div className="mt-4 flex items-center gap-2">
-              <input type="checkbox" id="ratio" checked readOnly className="w-3.5 h-3.5 accent-[#4f46e5]" />
-              <label htmlFor="ratio" className={cn("text-[11px] font-medium", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Lock Aspect Ratio</label>
+            
+            <div className="flex items-center justify-between pt-1">
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-medium">
+                <input 
+                  type="checkbox" 
+                  checked={lockAspectRatio} 
+                  onChange={(e) => setLockAspectRatio(e.target.checked)} 
+                  className="w-3.5 h-3.5 accent-indigo-600 rounded" 
+                />
+                Lock Aspect Ratio
+              </label>
+              {(maxWidth || maxHeight) && (
+                <button 
+                  onClick={() => { setMaxWidth(''); setMaxHeight(''); }}
+                  className="text-[10px] text-indigo-500 hover:underline"
+                >
+                  Reset size
+                </button>
+              )}
             </div>
           </section>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div className={cn("p-3 rounded-lg border", isDarkMode ? "bg-slate-800 border-slate-700" : "bg-[#f8fafc] border-[#e2e8f0]")}>
-              <span className={cn("text-[10px] font-medium block mb-1", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Queue Total</span>
-              <span className={cn("text-sm font-bold", isDarkMode ? "text-white" : "text-[#1e293b]")}>
-                {formatBytes(files.reduce((acc, f) => acc + f.file.size, 0))}
-              </span>
+          {/* Batch Stats Widget */}
+          <section className="pt-2">
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className={cn(
+                "p-3 rounded-xl border",
+                isDarkMode ? "bg-slate-800/50 border-slate-700" : "bg-slate-50 border-slate-200"
+              )}>
+                <span className="text-[10px] font-semibold uppercase text-slate-400 block mb-1">Original</span>
+                <span className="text-sm font-bold font-mono">{formatBytes(queueTotalBytes)}</span>
+              </div>
+              <div className={cn(
+                "p-3 rounded-xl border",
+                isDarkMode ? "bg-slate-800/50 border-slate-700" : "bg-slate-50 border-slate-200"
+              )}>
+                <span className="text-[10px] font-semibold uppercase text-slate-400 block mb-1">Converted</span>
+                <span className="text-sm font-bold font-mono text-emerald-500">{formatBytes(processedTotalBytes)}</span>
+              </div>
             </div>
-            <div className={cn("p-3 rounded-lg border", isDarkMode ? "bg-slate-800 border-slate-700" : "bg-[#f8fafc] border-[#e2e8f0]")}>
-              <span className={cn("text-[10px] font-medium block mb-1", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Processed</span>
-              <span className="text-sm font-bold text-[#10b981]">
-                {formatBytes(files.reduce((acc, f) => acc + (f.result?.size || 0), 0))}
-              </span>
-            </div>
-          </div>
+            {totalSavingsBytes > 0 && (
+              <div className="mt-2 text-center text-xs font-semibold text-emerald-500 bg-emerald-500/10 py-1.5 px-3 rounded-lg border border-emerald-500/20">
+                🎉 Saved {formatBytes(totalSavingsBytes)} ({savingsPercent}%)
+              </div>
+            )}
+          </section>
 
+          {/* Action Button */}
           <Button 
             onClick={processAll}
             disabled={files.length === 0 || isProcessingAll}
-            className="w-full bg-[#4f46e5] hover:bg-[#4338ca] text-white h-12 rounded-xl font-bold text-sm mt-auto shadow-sleek transition-all active:scale-[0.98]"
+            className="w-full bg-indigo-600 hover:bg-indigo-700 text-white h-12 rounded-xl font-bold text-sm shadow-md transition-all active:scale-[0.98]"
           >
             {isProcessingAll ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Processing...
+                Processing ({processingProgress.current}/{processingProgress.total})...
               </>
             ) : (
               <>
-                Convert & Export ⚡
+                Convert All Images ⚡
               </>
             )}
           </Button>
         </div>
       </aside>
+
+      {/* Before / After Inspection Modal */}
+      <AnimatePresence>
+        {inspectedItem && inspectedItem.result && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className={cn(
+                "relative w-full max-w-4xl max-h-[90vh] rounded-2xl shadow-2xl border flex flex-col overflow-hidden",
+                isDarkMode ? "bg-slate-900 border-slate-800 text-slate-100" : "bg-white border-slate-200 text-slate-900"
+              )}
+            >
+              {/* Modal Header */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 dark:border-slate-800">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-500">
+                    <Maximize2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base truncate max-w-md">{inspectedItem.file.name}</h3>
+                    <p className="text-xs text-slate-400">Before & After Side-by-Side Comparison</p>
+                  </div>
+                </div>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  onClick={() => setInspectedItem(null)}
+                  className="rounded-full h-8 w-8"
+                >
+                  <X className="w-4 h-4" />
+                </Button>
+              </div>
+
+              {/* Side by side display */}
+              <div className="grid grid-cols-2 gap-4 p-6 flex-1 min-h-0 overflow-y-auto">
+                {/* Original */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between items-center text-xs font-bold text-slate-400 uppercase tracking-wider">
+                    <span>Original ({inspectedItem.file.type.split('/')[1] || 'IMAGE'})</span>
+                    <span>{formatBytes(inspectedItem.file.size)}</span>
+                  </div>
+                  <div className="aspect-video rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 flex items-center justify-center p-2">
+                    <img 
+                      src={inspectedItem.preview} 
+                      alt="Original" 
+                      className="max-h-full max-w-full object-contain" 
+                    />
+                  </div>
+                  <div className="text-[11px] text-slate-400 font-mono">
+                    Dimensions: {inspectedItem.origWidth} × {inspectedItem.origHeight} px
+                  </div>
+                </div>
+
+                {/* Converted */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex justify-between items-center text-xs font-bold text-emerald-500 uppercase tracking-wider">
+                    <span>Converted ({inspectedItem.result.format.split('/')[1]})</span>
+                    <span>{formatBytes(inspectedItem.result.size)}</span>
+                  </div>
+                  <div className="aspect-video rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-950 flex items-center justify-center p-2">
+                    <img 
+                      src={inspectedItem.result.url} 
+                      alt="Converted" 
+                      className="max-h-full max-w-full object-contain" 
+                    />
+                  </div>
+                  <div className="flex justify-between items-center text-[11px] font-mono">
+                    <span className="text-slate-400">
+                      Dimensions: {inspectedItem.result.width} × {inspectedItem.result.height} px
+                    </span>
+                    <span className="text-emerald-500 font-bold">
+                      Saved {Math.round(((inspectedItem.file.size - inspectedItem.result.size) / inspectedItem.file.size) * 100)}%
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="flex justify-between items-center px-6 py-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => copyToClipboard(inspectedItem)}
+                  className="text-xs"
+                >
+                  <Copy className="w-3.5 h-3.5 mr-1.5" />
+                  {copiedId === inspectedItem.id ? 'Copied to Clipboard!' : 'Copy to Clipboard'}
+                </Button>
+
+                <div className="flex gap-2">
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={() => setInspectedItem(null)}
+                    className="text-xs"
+                  >
+                    Close
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    onClick={() => downloadImage(inspectedItem.result!)}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold"
+                  >
+                    <Download className="w-3.5 h-3.5 mr-1.5" />
+                    Download {inspectedItem.result.name}
+                  </Button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -595,58 +1189,67 @@ export default function App() {
 function FormatExplorer({ isDarkMode, onSelectFormat }: { isDarkMode: boolean, onSelectFormat: (mime: OutputFormat) => void }) {
   const formats = [
     { 
+      name: 'AVIF', 
+      mime: 'image/avif' as OutputFormat,
+      ext: '.avif', 
+      desc: 'Next-generation image format based on AV1 video codec. Exceptional compression efficiency with crystal-clear fidelity.',
+      pros: ['Smallest file sizes', 'Supports HDR & transparency', 'Future of web media'],
+      cons: ['Slightly higher encode time', 'Requires modern software'],
+      icon: <Sparkles className="w-5 h-5 text-indigo-500" />
+    },
+    { 
+      name: 'WebP', 
+      mime: 'image/webp' as OutputFormat,
+      ext: '.webp', 
+      desc: 'Modern Google format designed for the web. Provides 25-35% smaller files than JPEG at equivalent quality.',
+      pros: ['Superior web compression', 'Lossy and lossless modes', 'Alpha transparency'],
+      cons: ['Legacy editor compatibility', 'Less prevalent in print'],
+      icon: <Zap className="w-5 h-5 text-amber-500" />
+    },
+    { 
       name: 'JPEG', 
       mime: 'image/jpeg' as OutputFormat,
       ext: '.jpg, .jpeg', 
-      desc: 'Best for photographs and complex images. Uses lossy compression.',
-      pros: ['Small file size', 'Universal support', 'Adjustable quality'],
-      cons: ['No transparency', 'Lossy compression artifacts'],
+      desc: 'The universal digital photography standard. Supported natively by virtually every device and platform in existence.',
+      pros: ['100% universal support', 'Compact size for photos', 'Adjustable quality levels'],
+      cons: ['No transparency support', 'Lossy compression artifacts on sharp text'],
       icon: <ImageIcon className="w-5 h-5 text-orange-500" />
     },
     { 
       name: 'PNG', 
       mime: 'image/png' as OutputFormat,
       ext: '.png', 
-      desc: 'Best for logos, icons, and graphics with transparency.',
-      pros: ['Lossless quality', 'Transparency support', 'Sharp edges'],
-      cons: ['Large file size', 'Not ideal for photos'],
+      desc: 'Lossless raster format ideal for logos, user interface designs, charts, and graphics requiring transparent backgrounds.',
+      pros: ['Zero quality loss', 'Full alpha channel transparency', 'Sharp edges & pixel precision'],
+      cons: ['Larger file sizes for photographs', 'No native animation in standard PNG'],
       icon: <FileText className="w-5 h-5 text-blue-500" />
-    },
-    { 
-      name: 'WebP', 
-      mime: 'image/webp' as OutputFormat,
-      ext: '.webp', 
-      desc: 'Modern format for the web. Supports both lossy and lossless.',
-      pros: ['Superior compression', 'Supports transparency', 'Faster loading'],
-      cons: ['Older browser issues', 'Slightly complex encoding'],
-      icon: <Zap className="w-5 h-5 text-yellow-500" />
     },
     { 
       name: 'BMP', 
       mime: 'image/bmp' as OutputFormat,
       ext: '.bmp', 
-      desc: 'Uncompressed raster format. High quality but massive size.',
-      pros: ['No compression loss', 'Simple structure'],
-      cons: ['Huge file size', 'Not web-friendly'],
+      desc: 'Standard Windows Bitmap format. Completely uncompressed scanline data for raw image manipulation.',
+      pros: ['Zero compression artifacts', 'Direct hardware bitmap mapping', 'Simple structure'],
+      cons: ['Extremely large file size', 'Unsuitable for web delivery'],
       icon: <FileJson className="w-5 h-5 text-slate-500" />
     },
     { 
       name: 'TIFF', 
       mime: 'image/tiff' as OutputFormat,
       ext: '.tiff', 
-      desc: 'Professional format for printing and high-end photography.',
-      pros: ['Extremely high quality', 'Supports layers', 'Lossless'],
-      cons: ['Very large files', 'Limited web support'],
+      desc: 'Tagged Image File Format favored in publishing, archival photography, medical imaging, and high-end printing.',
+      pros: ['Lossless studio archival', 'Standard in commercial print', 'High bit-depth'],
+      cons: ['Heavy file footprint', 'No native web browser preview'],
       icon: <ShieldCheck className="w-5 h-5 text-purple-500" />
     },
     { 
       name: 'GIF', 
       mime: 'image/gif' as OutputFormat,
       ext: '.gif', 
-      desc: 'Limited color format supporting basic animation and transparency.',
-      pros: ['Animation support', 'Small for simple icons'],
-      cons: ['Only 256 colors', 'Poor for photos'],
-      icon: <CheckCircle2 className="w-5 h-5 text-green-500" />
+      desc: 'Classic 8-bit indexed palette format supporting simple animations and indexed transparency.',
+      pros: ['Universal legacy support', 'Lightweight for simple diagrams', 'Indexed color'],
+      cons: ['Maximum 256 colors', 'Poor photographic gradient reproduction'],
+      icon: <CheckCircle2 className="w-5 h-5 text-emerald-500" />
     }
   ];
 
@@ -654,11 +1257,13 @@ function FormatExplorer({ isDarkMode, onSelectFormat }: { isDarkMode: boolean, o
     <div className="flex-1 flex flex-col gap-6 min-h-0 overflow-hidden">
       <header className="flex justify-between items-center shrink-0">
         <div>
-          <h1 className={cn("text-2xl font-bold", isDarkMode ? "text-white" : "text-[#1e293b]")}>Format Explorer</h1>
-          <p className={cn("text-sm", isDarkMode ? "text-slate-500" : "text-[#64748b]")}>Learn about formats and select one to start converting</p>
+          <h1 className="text-2xl font-black tracking-tight">Format Explorer</h1>
+          <p className={cn("text-xs mt-0.5", isDarkMode ? "text-slate-400" : "text-slate-500")}>
+            Learn format strengths, compression trade-offs, and select the optimal format for your project
+          </p>
         </div>
-        <Badge variant="outline" className={cn(isDarkMode ? "border-slate-700 text-slate-400" : "border-[#e2e8f0] text-[#64748b]")}>
-          v2.0 Stable
+        <Badge variant="outline" className="font-mono text-xs">
+          v1.1.0 Stable
         </Badge>
       </header>
 
@@ -669,55 +1274,65 @@ function FormatExplorer({ isDarkMode, onSelectFormat }: { isDarkMode: boolean, o
               key={f.name} 
               onClick={() => onSelectFormat(f.mime)}
               className={cn(
-                "border shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group relative overflow-hidden",
-                isDarkMode ? "bg-[#1e293b] border-slate-800 hover:border-[#4f46e5]/50" : "bg-white border-[#e2e8f0] hover:border-[#4f46e5]/50"
+                "border shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer group relative overflow-hidden",
+                isDarkMode ? "bg-[#131d31] border-slate-800 hover:border-indigo-500/60" : "bg-white border-slate-200 hover:border-indigo-500/60"
               )}
             >
               <div className="absolute top-0 right-0 p-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                <ArrowRightLeft className="w-4 h-4 text-[#4f46e5]" />
+                <ArrowRightLeft className="w-4 h-4 text-indigo-500" />
               </div>
               
               <CardHeader className="pb-2">
-                <div className="flex items-center gap-3 mb-2">
+                <div className="flex items-center gap-3 mb-1">
                   <div className={cn(
-                    "p-2 rounded-lg transition-colors",
-                    isDarkMode ? "bg-slate-800 group-hover:bg-[#4f46e5]/20" : "bg-slate-50 group-hover:bg-[#f5f3ff]"
+                    "p-2 rounded-xl transition-colors",
+                    isDarkMode ? "bg-slate-800 group-hover:bg-indigo-500/20" : "bg-slate-100 group-hover:bg-indigo-50"
                   )}>
                     {f.icon}
                   </div>
                   <div>
-                    <CardTitle className={cn("text-lg", isDarkMode ? "text-white" : "text-[#1e293b]")}>{f.name}</CardTitle>
-                    <CardDescription className={isDarkMode ? "text-slate-500" : "text-[#64748b]"}>{f.ext}</CardDescription>
+                    <CardTitle className="text-base font-bold">{f.name}</CardTitle>
+                    <CardDescription className="text-xs font-mono">{f.ext}</CardDescription>
                   </div>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <p className={cn("text-sm leading-relaxed", isDarkMode ? "text-slate-400" : "text-[#64748b]")}>
+              <CardContent className="space-y-3.5">
+                <p className={cn("text-xs leading-relaxed", isDarkMode ? "text-slate-400" : "text-slate-600")}>
                   {f.desc}
                 </p>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-green-500">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-emerald-500">
                     <CheckCircle2 className="w-3 h-3" /> Pros
                   </div>
                   <ul className="space-y-1">
                     {f.pros.map(p => (
-                      <li key={p} className={cn("text-xs flex items-center gap-2", isDarkMode ? "text-slate-300" : "text-slate-600")}>
-                        <div className="w-1 h-1 rounded-full bg-green-500" /> {p}
+                      <li key={p} className={cn("text-[11px] flex items-center gap-1.5", isDarkMode ? "text-slate-300" : "text-slate-600")}>
+                        <div className="w-1 h-1 rounded-full bg-emerald-500 shrink-0" /> {p}
                       </li>
                     ))}
                   </ul>
                 </div>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-red-500">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-rose-500">
                     <AlertCircle className="w-3 h-3" /> Cons
                   </div>
                   <ul className="space-y-1">
                     {f.cons.map(c => (
-                      <li key={c} className={cn("text-xs flex items-center gap-2", isDarkMode ? "text-slate-300" : "text-slate-600")}>
-                        <div className="w-1 h-1 rounded-full bg-red-500" /> {c}
+                      <li key={c} className={cn("text-[11px] flex items-center gap-1.5", isDarkMode ? "text-slate-300" : "text-slate-600")}>
+                        <div className="w-1 h-1 rounded-full bg-rose-500 shrink-0" /> {c}
                       </li>
                     ))}
                   </ul>
+                </div>
+
+                <div className="pt-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    className="w-full text-xs font-semibold h-8 group-hover:bg-indigo-600 group-hover:text-white group-hover:border-indigo-600 transition-colors"
+                  >
+                    Select {f.name}
+                  </Button>
                 </div>
               </CardContent>
             </Card>

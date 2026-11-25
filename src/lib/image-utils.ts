@@ -45,6 +45,7 @@ export interface ProcessedImage {
 
 export interface AndroidBridge {
   saveFile?: (base64Data: string, fileName: string, mimeType: string) => string;
+  shareFile?: (base64Data: string, fileName: string, mimeType: string) => boolean;
   setTheme?: (isDark: boolean) => void;
   isAndroid?: () => boolean;
 }
@@ -607,6 +608,17 @@ export async function processImage(
   };
 }
 
+async function blobToBase64(blob: Blob): Promise<string> {
+  const buffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
 /**
  * Save a Blob cleanly on Desktop, Web, or Android WebView
  */
@@ -615,14 +627,7 @@ export async function saveBlobToDevice(
   fileName: string
 ): Promise<{ ok: boolean; location?: string }> {
   if (window.PixelPerfectAndroid?.saveFile) {
-    const buffer = await blob.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000;
-    let binary = '';
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
-    }
-    const base64 = btoa(binary);
+    const base64 = await blobToBase64(blob);
     const savedPath = window.PixelPerfectAndroid.saveFile(base64, fileName, blob.type || 'application/octet-stream');
     return { ok: !!savedPath, location: savedPath };
   }
@@ -636,6 +641,29 @@ export async function saveBlobToDevice(
   document.body.removeChild(link);
   setTimeout(() => URL.revokeObjectURL(url), 2000);
   return { ok: true };
+}
+
+/**
+ * Share a converted Blob via native Android Share sheet or Web Share API
+ */
+export async function shareBlobFromDevice(
+  blob: Blob,
+  fileName: string
+): Promise<boolean> {
+  if (window.PixelPerfectAndroid?.shareFile) {
+    const base64 = await blobToBase64(blob);
+    return window.PixelPerfectAndroid.shareFile(base64, fileName, blob.type || 'image/jpeg');
+  }
+  if (typeof navigator.share === 'function') {
+    try {
+      const file = new File([blob], fileName, { type: blob.type });
+      await navigator.share({ files: [file], title: fileName });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /**

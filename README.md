@@ -1,12 +1,16 @@
 # PixelPerfect Image Converter & Explorer
 
-[![Release](https://img.shields.io/badge/version-1.3.0-indigo.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
+[![Release](https://img.shields.io/badge/version-1.3.1-indigo.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20Android-blue.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
 **PixelPerfect** is a high-performance cross-platform application designed for instant image conversion, intelligent resizing, and precision compression. Built with React, TypeScript, Tailwind CSS, Electron (Desktop), and native Android WebView, it delivers fast offline workflows across Windows, Linux, and Android.
 
 ---
+
+## ⚡ What's New in v1.3.1
+
+- 📱 **Mobile-First Android UX Redesign**: Replaced raw HTML checkboxes and technical controls with sleek pill toggle switches, one-tap format grids (`JPG`, `WebP`, `PNG`, `AVIF`), visual quality preset cards (`Best Quality`, `Balanced`, `Tiny Size`, `Lossless`), quick target-size/resize chips, circular color swatches, a thumb-friendly bottom navigation bar, and native 1-tap Android Share (`Intent.ACTION_SEND`) support.
 
 ## ⚡ What's New in v1.3.0
 
@@ -37,18 +41,18 @@
 ## 💻 Downloads & Installation
 
 ### Android (7.0+)
-1. Download **`PixelPerfect-Converter-1.3.0-Android.apk`** (~245 KB) from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+1. Download **`PixelPerfect-Converter-1.3.1-Android.apk`** (~260 KB) from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
 2. Install the APK on your device. Converted images and `.zip` archives are saved directly to `Downloads/PixelPerfect/`.
 
 ### Windows (10 / 11 64-bit)
-1. Download **`PixelPerfect-Converter-1.3.0-Portable.exe`** from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+1. Download **`PixelPerfect-Converter-1.3.1-Portable.exe`** from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
 2. Run directly—no installation or admin rights required.
 
 ### Linux (Debian / Ubuntu / Mint / Pop!_OS)
-1. Download **`pixelperfect-converter_1.3.0_amd64.deb`** from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+1. Download **`pixelperfect-converter_1.3.1_amd64.deb`** from [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
 2. Install via terminal:
    ```bash
-   sudo dpkg -i pixelperfect-converter_1.3.0_amd64.deb
+   sudo dpkg -i pixelperfect-converter_1.3.1_amd64.deb
    ```
 
 ---

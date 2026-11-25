@@ -290,6 +290,33 @@ public class MainActivity extends Activity {
             });
         }
 
+        private Uri writeBytesToMediaStore(byte[] bytes, String safeName, String mimeType) throws IOException {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ContentResolver resolver = getContentResolver();
+                ContentValues values = new ContentValues();
+                values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
+                values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
+                values.put(
+                        MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS + "/PixelPerfect");
+                values.put(MediaStore.Downloads.IS_PENDING, 1);
+
+                Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+                if (uri == null) return null;
+
+                try (OutputStream out = resolver.openOutputStream(uri)) {
+                    if (out == null) return null;
+                    out.write(bytes);
+                }
+
+                values.clear();
+                values.put(MediaStore.Downloads.IS_PENDING, 0);
+                resolver.update(uri, values, null, null);
+                return uri;
+            }
+            return null;
+        }
+
         @JavascriptInterface
         public String saveFile(String base64Data, String fileName, String mimeType) {
             try {
@@ -297,27 +324,8 @@ public class MainActivity extends Activity {
                 String safeName = fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    ContentResolver resolver = getContentResolver();
-                    ContentValues values = new ContentValues();
-                    values.put(MediaStore.Downloads.DISPLAY_NAME, safeName);
-                    values.put(MediaStore.Downloads.MIME_TYPE, mimeType);
-                    values.put(
-                            MediaStore.Downloads.RELATIVE_PATH,
-                            Environment.DIRECTORY_DOWNLOADS + "/PixelPerfect");
-                    values.put(MediaStore.Downloads.IS_PENDING, 1);
-
-                    Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-                    if (uri == null) return "";
-
-                    try (OutputStream out = resolver.openOutputStream(uri)) {
-                        if (out == null) return "";
-                        out.write(bytes);
-                    }
-
-                    values.clear();
-                    values.put(MediaStore.Downloads.IS_PENDING, 0);
-                    resolver.update(uri, values, null, null);
-                    return "Downloads/PixelPerfect/" + safeName;
+                    Uri uri = writeBytesToMediaStore(bytes, safeName, mimeType);
+                    return uri != null ? ("Downloads/PixelPerfect/" + safeName) : "";
                 } else {
                     File downloadsDir = Environment.getExternalStoragePublicDirectory(
                             Environment.DIRECTORY_DOWNLOADS);
@@ -337,6 +345,27 @@ public class MainActivity extends Activity {
                         "Failed to save: " + e.getMessage(),
                         Toast.LENGTH_SHORT).show());
                 return "";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean shareFile(String base64Data, String fileName, String mimeType) {
+            try {
+                byte[] bytes = Base64.decode(base64Data, Base64.DEFAULT);
+                String safeName = fileName.replaceAll("[^a-zA-Z0-9._-]", "_");
+                Uri shareUri = writeBytesToMediaStore(bytes, safeName, mimeType);
+                if (shareUri == null) return false;
+
+                runOnUiThread(() -> {
+                    Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                    shareIntent.setType(mimeType);
+                    shareIntent.putExtra(Intent.EXTRA_STREAM, shareUri);
+                    shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    startActivity(Intent.createChooser(shareIntent, "Share " + safeName));
+                });
+                return true;
+            } catch (Exception e) {
+                return false;
             }
         }
     }

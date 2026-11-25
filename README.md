@@ -1,12 +1,16 @@
 # PixelPerfect Image Converter & Explorer
 
-[![Release](https://img.shields.io/badge/version-1.1.0-indigo.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
+[![Release](https://img.shields.io/badge/version-1.1.1-indigo.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-blue.svg)](https://github.com/pprpprppr/PixelPerfect/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](LICENSE)
 
 **PixelPerfect** is a high-performance desktop application designed for instant image conversion, intelligent resizing, and precision compression. Built with Electron, Vite, React, and TypeScript, it delivers native desktop speed and zero-latency offline workflows.
 
 ---
+
+## ⚡ What's New in v1.1.1
+
+- 💾 **Storage & Bundle Optimization**: Trimmed unused Electron locales (~45 MB), removed redundant bundled `node_modules` from `app.asar` (~1.7 MB), stripped unused 19 MB Chromium license dump and 26.5 MB WebGPU DXC compiler DLLs (Windows), cutting installed disk footprint by ~70–95 MB without sacrificing any features or startup speed.
 
 ## ⚡ What's New in v1.1.0
 
@@ -42,14 +46,14 @@
 ## 💻 Downloads & Installation
 
 ### Windows
-1. Download **`PixelPerfect-Converter-1.1.0-Portable.exe`** from the [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+1. Download **`PixelPerfect-Converter-1.1.1-Portable.exe`** from the [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
 2. Run directly—no installation or admin rights required.
 
 ### Linux (Debian / Ubuntu / Mint / Pop!_OS)
-1. Download **`pixelperfect-converter_1.1.0_amd64.deb`** from the [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
+1. Download **`pixelperfect-converter_1.1.1_amd64.deb`** from the [Releases](https://github.com/pprpprppr/PixelPerfect/releases).
 2. Install via terminal:
    ```bash
-   sudo dpkg -i pixelperfect-converter_1.1.0_amd64.deb
+   sudo dpkg -i pixelperfect-converter_1.1.1_amd64.deb
    ```
    Or open with your distribution's Software Installer.
 

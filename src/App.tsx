@@ -1263,7 +1263,7 @@ function FormatExplorer({ isDarkMode, onSelectFormat }: { isDarkMode: boolean, o
           </p>
         </div>
         <Badge variant="outline" className="font-mono text-xs">
-          v1.1.0 Stable
+          v1.1.1 Stable
         </Badge>
       </header>
 

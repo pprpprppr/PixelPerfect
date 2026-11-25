@@ -1,7 +1,7 @@
 {
   "name": "pixelperfect-converter",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "A universal image format converter, compressor, and explorer",
   "author": "PixelPerfect Team",
   "homepage": "https://pixelperfect.app",
@@ -42,13 +42,16 @@
       "category": "Graphics",
       "icon": "build/icon.png"
     },
+    "electronLanguages": [
+      "en-US"
+    ],
+    "afterPack": "build/afterPack.cjs",
     "asar": true,
     "compression": "maximum"
   },
-  "dependencies": {
-    "jszip": "^3.10.2"
-  },
+  "dependencies": {},
   "devDependencies": {
+    "jszip": "^3.10.2",
     "@base-ui/react": "^1.4.0",
     "@fontsource-variable/geist": "^5.2.8",
     "@google/genai": "^1.29.0",
